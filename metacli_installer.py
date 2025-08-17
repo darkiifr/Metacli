@@ -27,74 +27,174 @@ except ImportError:
 try:
     from installer.dependency_manager import DependencyManager
     from installer.system_integration import SystemIntegration
-except ImportError:
+    INSTALLER_MODULES_AVAILABLE = True
+except ImportError as e:
     # Fallback if modules are not available
+    print(f"Warning: Installer modules not available: {e}")
+    print("Installer will use fallback functionality.")
     DependencyManager = None
     SystemIntegration = None
+    INSTALLER_MODULES_AVAILABLE = False
 
 
 class MetaCLIInstaller:
-    def __init__(self):
-        # Check for existing instance
-        if not self.check_singleton():
-            messagebox.showerror("MetaCLI Setup", "Another instance of MetaCLI Setup is already running.")
-            sys.exit(1)
+    def __init__(self, mode='install'):
+        """Initialize the installer with comprehensive error handling"""
+        try:
+            print(f"Initializing MetaCLI Installer in {mode} mode...")
             
-        # Initialize basic variables first
-        self.installation_cancelled = False
-        self.current_step = 0
-        self.total_steps = 8
-        self.installation_complete = False
+            # Check for existing instance
+            try:
+                if not self.check_singleton():
+                    error_msg = "Another instance of MetaCLI Setup is already running."
+                    print(f"Error: {error_msg}")
+                    try:
+                        messagebox.showerror("MetaCLI Setup", error_msg)
+                    except:
+                        pass  # If messagebox fails, continue with print
+                    sys.exit(1)
+                print("Singleton check passed")
+            except Exception as e:
+                print(f"Warning: Singleton check failed: {e}")
+                # Continue anyway as this is not critical
+                
+            # Initialize basic variables first
+            try:
+                self.installation_cancelled = False
+                self.current_step = 0
+                self.total_steps = 8
+                self.installation_complete = False
+                print("Basic variables initialized")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize basic variables: {e}")
+            
+            # Set installer mode (install, repair, modify, uninstall)
+            try:
+                self.mode = mode
+                self.existing_installation = None
+                self.installed_components = {}
+                self.installation_health = None
+                self.multiple_installations = []
+                print(f"Mode set to: {mode}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to set installer mode: {e}")
+            
+            # Initialize paths and directories
+            try:
+                self.installer_dir = Path(__file__).parent.absolute()
+                self.dist_dir = self.installer_dir / 'dist'
+                print(f"Installer directory: {self.installer_dir}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize paths: {e}")
+            
+            # Setup logging early
+            try:
+                self.setup_logging()
+                print("Logging setup completed")
+            except Exception as e:
+                print(f"Warning: Failed to setup logging: {e}")
+                # Continue without logging if it fails
+            
+            # Detect existing installation
+            try:
+                self.detect_existing_installation()
+                print("Installation detection completed")
+            except Exception as e:
+                print(f"Warning: Failed to detect existing installation: {e}")
+                self.existing_installation = None
+            
+            # Create and configure main window
+            try:
+                self.root = tk.Tk()
+                print("Tkinter window created")
+            except Exception as e:
+                raise RuntimeError(f"Failed to create Tkinter window: {e}")
         
-        # Initialize paths and directories
-        self.installer_dir = Path(__file__).parent.absolute()
-        self.dist_dir = self.installer_dir / 'dist'
-        
-        # Setup logging early
-        self.setup_logging()
-        
-        # Create and configure main window
-        self.root = tk.Tk()
-        self.root.title("MetaCLI Setup")
-        self.root.geometry("650x500")
-        self.root.minsize(650, 500)
-        self.root.resizable(False, False)
-        self.root.configure(bg='#f0f0f0')
-        
-        # Center window on screen
-        self.center_window()
-        
-        # Installation configuration
-        self.install_path = tk.StringVar(value=os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'MetaCLI'))
-        self.add_to_path = tk.BooleanVar(value=True)
-        self.install_gui = tk.BooleanVar(value=True)
-        self.install_cli = tk.BooleanVar(value=True)
-        self.create_shortcuts = tk.BooleanVar(value=True)
-        self.create_start_menu = tk.BooleanVar(value=True)
-        self.register_uninstaller = tk.BooleanVar(value=True)
-        
-        # Required dependencies
-        self.dependencies = [
-            'click>=8.0.0',
-            'Pillow>=9.0.0',
-            'mutagen>=1.45.0',
-            'PyPDF2>=3.0.0',
-            'python-docx>=0.8.11',
-            'pyyaml>=6.0',
-            'tabulate>=0.9.0',
-            'openpyxl>=3.0.0',
-            'chardet>=5.0.0'
-        ]
-        
-        # Defer expensive manager initialization
-        self.dependency_manager = None
-        self.system_integration = None
-        
-        # Setup UI immediately
-        self.setup_ui()
-        
-        # Initialize managers after UI is ready
-        self.root.after(100, self.initialize_managers)
+            # Set window title based on mode
+            try:
+                mode_titles = {
+                    'install': 'MetaCLI Setup',
+                    'repair': 'MetaCLI Repair',
+                    'modify': 'MetaCLI Modify',
+                    'uninstall': 'MetaCLI Uninstall'
+                }
+                self.root.title(mode_titles.get(self.mode, 'MetaCLI Setup'))
+                
+                self.root.geometry("650x550")
+                self.root.minsize(650, 550)
+                self.root.resizable(False, False)
+                self.root.configure(bg='#f0f0f0')
+                print("Window configuration completed")
+            except Exception as e:
+                raise RuntimeError(f"Failed to configure window: {e}")
+            
+            # Center window on screen
+            try:
+                self.center_window()
+                print("Window centered")
+            except Exception as e:
+                print(f"Warning: Failed to center window: {e}")
+            
+            # Installation configuration - use user directory by default to avoid permission issues
+            try:
+                default_install_path = str(Path.home() / 'AppData' / 'Local' / 'MetaCLI')
+                self.install_path = tk.StringVar(value=default_install_path)
+                self.add_to_path = tk.BooleanVar(value=True)
+                self.install_gui = tk.BooleanVar(value=True)
+                self.install_cli = tk.BooleanVar(value=True)
+                self.create_shortcuts = tk.BooleanVar(value=True)
+                self.create_start_menu = tk.BooleanVar(value=True)
+                self.register_uninstaller = tk.BooleanVar(value=True)
+                print("Installation configuration variables initialized")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize configuration variables: {e}")
+            
+            # Required dependencies
+            try:
+                self.dependencies = [
+                    'click>=8.0.0',
+                    'Pillow>=9.0.0',
+                    'mutagen>=1.45.0',
+                    'PyPDF2>=3.0.0',
+                    'python-docx>=0.8.11',
+                    'pyyaml>=6.0',
+                    'tabulate>=0.9.0',
+                    'openpyxl>=3.0.0',
+                    'chardet>=5.0.0'
+                ]
+                print(f"Dependencies list initialized with {len(self.dependencies)} packages")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize dependencies list: {e}")
+            
+            # Defer expensive manager initialization
+            self.dependency_manager = None
+            self.system_integration = None
+            
+            # Setup UI immediately
+            try:
+                self.setup_ui()
+                print("UI setup completed")
+            except Exception as e:
+                raise RuntimeError(f"Failed to setup UI: {e}")
+            
+            # Initialize managers after UI is ready
+            try:
+                self.root.after(100, self.initialize_managers)
+                print("Manager initialization scheduled")
+            except Exception as e:
+                print(f"Warning: Failed to schedule manager initialization: {e}")
+                
+            print("MetaCLI Installer initialization completed successfully")
+            
+        except Exception as e:
+            print(f"Critical error during installer initialization: {e}")
+            # Try to cleanup if possible
+            try:
+                if hasattr(self, 'root') and self.root:
+                    self.root.destroy()
+            except:
+                pass
+            raise
         
     def center_window(self):
         """Center the window on the screen"""
@@ -108,14 +208,21 @@ class MetaCLIInstaller:
     def initialize_managers(self):
         """Initialize dependency and system integration managers after UI is ready"""
         try:
-            self.dependency_manager = DependencyManager() if DependencyManager else None
-            self.system_integration = SystemIntegration() if SystemIntegration else None
+            if INSTALLER_MODULES_AVAILABLE:
+                self.dependency_manager = DependencyManager(logger_callback=self.log_message) if DependencyManager else None
+                self.system_integration = SystemIntegration(logger_callback=self.log_message) if SystemIntegration else None
+                self.log_message("Installer modules initialized successfully")
+            else:
+                self.dependency_manager = None
+                self.system_integration = None
+                self.log_message("Using fallback functionality - some features may be limited")
         except Exception as e:
             self.dependency_manager = None
             self.system_integration = None
-            print(f"Warning: Could not initialize installer modules: {e}")
-            if hasattr(self, 'logger'):
-                self.logger.warning(f"Could not initialize installer modules: {e}")
+            error_msg = f"Could not initialize installer modules: {e}"
+            print(f"Warning: {error_msg}")
+            self.log_message(f"Warning: {error_msg}")
+            self.log_message("Falling back to basic functionality")
     
     def check_singleton(self):
         """Check if another instance of the installer is already running"""
@@ -144,8 +251,9 @@ class MetaCLIInstaller:
             return True
         
     def setup_logging(self):
-        """Setup logging for the installer"""
+        """Setup logging configuration"""
         log_file = self.installer_dir / 'metacli_installer.log'
+        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -154,7 +262,107 @@ class MetaCLIInstaller:
                 logging.StreamHandler()
             ]
         )
+        
         self.logger = logging.getLogger(__name__)
+        
+    def detect_existing_installation(self):
+        """Detect existing MetaCLI installation using enhanced detection methods"""
+        try:
+            if INSTALLER_MODULES_AVAILABLE and SystemIntegration:
+                # Initialize system integration to check for existing installation
+                temp_system_integration = SystemIntegration(logger_callback=self.log_message)
+                
+                # Use enhanced detection mechanism
+                self.existing_installation = temp_system_integration.get_installation_info()
+                
+                if self.existing_installation:
+                    detection_method = self.existing_installation.get('DetectionMethod', 'Unknown')
+                    install_location = self.existing_installation.get('InstallLocation')
+                    
+                    self.log_message(f"Existing installation detected via {detection_method}: {self.existing_installation}")
+                    
+                    if install_location:
+                        install_path = Path(install_location)
+                        
+                        # Get installed components and health status
+                        if install_path.exists():
+                            self.installed_components = temp_system_integration.get_installed_components(install_path)
+                            self.installation_health = self._assess_installation_health(install_path)
+                            
+                            # Update install path to existing location
+                            self.install_path.set(str(install_path))
+                else:
+                    self.log_message("No existing installation detected")
+            else:
+                # Fallback detection using basic registry check
+                self.log_message("Using fallback installation detection")
+                self.existing_installation = self._fallback_detect_installation()
+                
+        except Exception as e:
+            self.log_message(f"Error during installation detection: {e}")
+            self.existing_installation = None
+            
+    def _fallback_detect_installation(self):
+        """Fallback method to detect existing installation without system integration module"""
+        try:
+            import winreg
+            registry_key = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MetaCLI'
+            
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, registry_key) as key:
+                install_location = winreg.QueryValueEx(key, 'InstallLocation')[0]
+                version = winreg.QueryValueEx(key, 'DisplayVersion')[0]
+                
+                return {
+                    'InstallLocation': install_location,
+                    'Version': version,
+                    'DetectionMethod': 'Registry (Fallback)'
+                }
+        except (FileNotFoundError, OSError):
+            # Try user registry
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_key) as key:
+                    install_location = winreg.QueryValueEx(key, 'InstallLocation')[0]
+                    version = winreg.QueryValueEx(key, 'DisplayVersion')[0]
+                    
+                    return {
+                        'InstallLocation': install_location,
+                        'Version': version,
+                        'DetectionMethod': 'User Registry (Fallback)'
+                    }
+            except (FileNotFoundError, OSError):
+                return None
+        except Exception as e:
+            self.log_message(f"Fallback detection error: {e}")
+            return None
+            
+    def _assess_installation_health(self, install_path):
+        """Assess the health of an existing installation"""
+        try:
+            required_files = ['MetaCLI-GUI.exe', 'metacli.exe']
+            missing_files = []
+            
+            for file_name in required_files:
+                if not (install_path / file_name).exists():
+                    missing_files.append(file_name)
+                    
+            if missing_files:
+                return {
+                    'status': 'damaged',
+                    'missing_files': missing_files,
+                    'description': f'Missing files: {", ".join(missing_files)}'
+                }
+            else:
+                return {
+                    'status': 'healthy',
+                    'missing_files': [],
+                    'description': 'Installation appears to be complete'
+                }
+        except Exception as e:
+            return {
+                'status': 'unknown',
+                'missing_files': [],
+                'description': f'Could not assess installation health: {e}'
+            }
         
     def setup_ui(self):
         """Setup the main user interface"""
@@ -235,39 +443,363 @@ class MetaCLIInstaller:
         self.update_buttons()
         
     def setup_welcome_page(self):
-        """Setup the welcome page"""
-        # Title
-        title_label = ttk.Label(self.welcome_frame, text="Welcome to MetaCLI Setup", 
-                               font=('Arial', 16, 'bold'))
-        title_label.pack(pady=(20, 10))
+        """Setup the welcome page with enhanced detection info and icons"""
+        # Check for existing installation and adjust mode if needed
+        if self.mode == 'install' and self.existing_installation:
+            self._show_existing_installation_options()
+            return
+            
+        # Title based on mode with icons
+        mode_titles = {
+            'install': 'Welcome to MetaCLI Setup',
+            'repair': 'MetaCLI Repair',
+            'modify': 'MetaCLI Modify Installation',
+            'uninstall': 'MetaCLI Uninstall'
+        }
         
-        # Description
-        desc_text = (
-            "This will install MetaCLI on your computer.\n\n"
-            "MetaCLI is a command-line interface for metadata extraction and management.\n\n"
-            "It includes both a GUI application and a command-line tool for processing\n"
-            "various file types and extracting metadata information.\n\n"
-            "Click Next to continue or Cancel to exit Setup."
-        )
+        # Create title frame with icon
+        title_frame = ttk.Frame(self.welcome_frame)
+        title_frame.pack(pady=(20, 10))
+        
+        # Add mode-specific icon (using Unicode symbols as fallback)
+        mode_icons = {
+            'install': '📦',
+            'repair': '🔧', 
+            'modify': '⚙️',
+            'uninstall': '🗑️'
+        }
+        
+        icon_label = ttk.Label(title_frame, text=mode_icons.get(self.mode, '📦'), 
+                              font=('Segoe UI', 20))
+        icon_label.pack(side='left', padx=(0, 10))
+        
+        title_label = ttk.Label(title_frame, text=mode_titles.get(self.mode, 'Welcome to MetaCLI Setup'), 
+                               font=('Arial', 16, 'bold'))
+        title_label.pack(side='left')
+        
+        # Description based on mode
+        if self.mode == 'install':
+            desc_text = (
+                "This will install MetaCLI on your computer.\n\n"
+                "MetaCLI is a command-line interface for metadata extraction and management.\n\n"
+                "It includes both a GUI application and a command-line tool for processing\n"
+                "various file types and extracting metadata information.\n\n"
+                "Click Next to continue or Cancel to exit Setup."
+            )
+        elif self.mode == 'repair':
+            desc_text = (
+                "This will repair your MetaCLI installation.\n\n"
+                "The repair process will:\n"
+                "• Re-install missing or corrupted files\n"
+                "• Restore missing shortcuts and registry entries\n"
+                "• Verify and fix system PATH entries\n"
+                "• Re-install missing dependencies\n\n"
+                "Click Next to continue or Cancel to exit."
+            )
+        elif self.mode == 'modify':
+            desc_text = (
+                "This will modify your MetaCLI installation.\n\n"
+                "You can:\n"
+                "• Add or remove components (GUI/CLI)\n"
+                "• Change shortcut preferences\n"
+                "• Modify system PATH integration\n"
+                "• Update installation location\n\n"
+                "Click Next to continue or Cancel to exit."
+            )
+        elif self.mode == 'uninstall':
+            desc_text = (
+                "This will completely remove MetaCLI from your computer.\n\n"
+                "The uninstall process will:\n"
+                "• Remove all MetaCLI files and folders\n"
+                "• Delete desktop and Start Menu shortcuts\n"
+                "• Remove system PATH entries\n"
+                "• Clean up registry entries\n\n"
+                "Click Next to continue or Cancel to exit."
+            )
+        else:
+            desc_text = "Unknown operation mode."
+            
         desc_label = ttk.Label(self.welcome_frame, text=desc_text, justify='left')
         desc_label.pack(pady=10, padx=20)
         
-        # System requirements check
-        req_frame = ttk.LabelFrame(self.welcome_frame, text="System Requirements")
-        req_frame.pack(fill='x', padx=20, pady=10)
+        # Show existing installation info if available
+        if self.existing_installation and self.mode != 'install':
+            install_frame = ttk.LabelFrame(self.welcome_frame, text="Current Installation")
+            install_frame.pack(fill='x', padx=20, pady=10)
+            
+            install_location = self.existing_installation.get('InstallLocation', 'Unknown')
+            install_version = self.existing_installation.get('DisplayVersion', 'Unknown')
+            detection_method = self.existing_installation.get('DetectionMethod', 'Unknown')
+            
+            ttk.Label(install_frame, text=f"Location: {install_location}").pack(anchor='w', padx=10, pady=2)
+            ttk.Label(install_frame, text=f"Version: {install_version}").pack(anchor='w', padx=10, pady=2)
+            ttk.Label(install_frame, text=f"Detected via: {detection_method}").pack(anchor='w', padx=10, pady=2)
+            
+            # Show installed components
+            if self.installed_components:
+                components_text = ", ".join([comp for comp, installed in self.installed_components.items() if installed])
+                ttk.Label(install_frame, text=f"Components: {components_text}").pack(anchor='w', padx=10, pady=2)
+                
+            # Show installation health status
+            if self.installation_health:
+                health_color = 'green' if self.installation_health['is_healthy'] else 'red'
+                health_text = 'Healthy' if self.installation_health['is_healthy'] else 'Issues Detected'
+                health_label = ttk.Label(install_frame, text=f"Status: {health_text}")
+                health_label.pack(anchor='w', padx=10, pady=2)
+                
+                # Show issues if any
+                if not self.installation_health['is_healthy'] and self.installation_health.get('issues'):
+                    issues_text = "; ".join(self.installation_health['issues'][:3])  # Show first 3 issues
+                    ttk.Label(install_frame, text=f"Issues: {issues_text}", foreground='red').pack(anchor='w', padx=10, pady=2)
+            
+            # Show version status if available
+            if hasattr(self, 'version_status') and self.version_status:
+                version_frame = ttk.LabelFrame(self.welcome_frame, text="Version Information")
+                version_frame.pack(fill='x', padx=20, pady=10)
+                
+                installed_ver = self.version_status['installed_version']
+                current_ver = self.version_status['current_version']
+                recommendation = self.version_status['recommendation']
+                
+                ttk.Label(version_frame, text=f"Installed: {installed_ver}").pack(anchor='w', padx=10, pady=2)
+                ttk.Label(version_frame, text=f"Installer: {current_ver}").pack(anchor='w', padx=10, pady=2)
+                
+                # Color-code the recommendation
+                if self.version_status['is_outdated']:
+                    color = 'orange'
+                elif self.version_status['is_newer']:
+                    color = 'blue'
+                else:
+                    color = 'green'
+                    
+                ttk.Label(version_frame, text=recommendation, foreground=color).pack(anchor='w', padx=10, pady=2)
+                    
+        # Show multiple installations warning
+        if hasattr(self, 'multiple_installations') and len(self.multiple_installations) > 1:
+            warning_frame = ttk.LabelFrame(self.welcome_frame, text="⚠️ Multiple Installations Detected")
+            warning_frame.pack(fill='x', padx=20, pady=10)
+            
+            ttk.Label(warning_frame, text=f"Found {len(self.multiple_installations)} MetaCLI installations:",
+                     foreground='orange').pack(anchor='w', padx=10, pady=2)
+            
+            for i, install in enumerate(self.multiple_installations[:3]):  # Show first 3
+                location = install.get('InstallLocation', 'Unknown')
+                method = install.get('DetectionMethod', 'Unknown')
+                ttk.Label(warning_frame, text=f"  {i+1}. {location} ({method})").pack(anchor='w', padx=10, pady=2)
+            if self.installed_components:
+                components_text = "Components: "
+                components = []
+                if self.installed_components.get('gui'): components.append('GUI')
+                if self.installed_components.get('cli'): components.append('CLI')
+                if self.installed_components.get('shortcuts_desktop'): components.append('Desktop Shortcuts')
+                if self.installed_components.get('shortcuts_start_menu'): components.append('Start Menu')
+                if self.installed_components.get('path_entry'): components.append('PATH Entry')
+                
+                components_text += ', '.join(components) if components else 'None detected'
+                ttk.Label(install_frame, text=components_text).pack(anchor='w', padx=10, pady=2)
         
-        python_version = f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        ttk.Label(req_frame, text=f"✓ {python_version} detected", foreground='green').pack(anchor='w', padx=10, pady=5)
-        ttk.Label(req_frame, text=f"✓ Windows {os.name} compatible", foreground='green').pack(anchor='w', padx=10, pady=5)
+        # System requirements check (only for install and repair)
+        if self.mode in ['install', 'repair']:
+            req_frame = ttk.LabelFrame(self.welcome_frame, text="System Requirements")
+            req_frame.pack(fill='x', padx=20, pady=10)
+            
+            python_version = f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            ttk.Label(req_frame, text=f"✓ {python_version} detected", foreground='green').pack(anchor='w', padx=10, pady=5)
+            ttk.Label(req_frame, text=f"✓ Windows {os.name} compatible", foreground='green').pack(anchor='w', padx=10, pady=5)
+    
+    def _show_existing_installation_options(self):
+        """Show options when MetaCLI is already installed"""
+        # Clear the welcome frame
+        for widget in self.welcome_frame.winfo_children():
+            widget.destroy()
+            
+        # Title with warning icon
+        title_frame = ttk.Frame(self.welcome_frame)
+        title_frame.pack(pady=(20, 10))
+        
+        icon_label = ttk.Label(title_frame, text='⚠️', font=('Segoe UI', 20))
+        icon_label.pack(side='left', padx=(0, 10))
+        
+        title_label = ttk.Label(title_frame, text='MetaCLI Already Installed', 
+                               font=('Arial', 16, 'bold'))
+        title_label.pack(side='left')
+        
+        # Description
+        desc_text = (
+            "MetaCLI is already installed on your computer.\n\n"
+            "Please choose what you would like to do:"
+        )
+        desc_label = ttk.Label(self.welcome_frame, text=desc_text, justify='center')
+        desc_label.pack(pady=10, padx=20)
+        
+        # Show existing installation info
+        if self.existing_installation:
+            install_frame = ttk.LabelFrame(self.welcome_frame, text="Current Installation")
+            install_frame.pack(fill='x', padx=20, pady=10)
+            
+            install_location = self.existing_installation.get('InstallLocation', 'Unknown')
+            install_version = self.existing_installation.get('DisplayVersion', 'Unknown')
+            detection_method = self.existing_installation.get('DetectionMethod', 'Unknown')
+            
+            ttk.Label(install_frame, text=f"Location: {install_location}").pack(anchor='w', padx=10, pady=2)
+            ttk.Label(install_frame, text=f"Version: {install_version}").pack(anchor='w', padx=10, pady=2)
+            ttk.Label(install_frame, text=f"Detected via: {detection_method}").pack(anchor='w', padx=10, pady=2)
+            
+            # Show installation health if available
+            if hasattr(self, 'installation_health') and self.installation_health:
+                health_status = self.installation_health.get('status', 'unknown')
+                if health_status == 'healthy':
+                    health_text = '✓ Installation is healthy'
+                    health_color = 'green'
+                elif health_status == 'damaged':
+                    health_text = '⚠ Installation has issues'
+                    health_color = 'orange'
+                else:
+                    health_text = '? Installation status unknown'
+                    health_color = 'gray'
+                    
+                ttk.Label(install_frame, text=health_text, foreground=health_color).pack(anchor='w', padx=10, pady=2)
+        
+        # Options frame
+        options_frame = ttk.LabelFrame(self.welcome_frame, text="Available Actions")
+        options_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Create radio button variable
+        self.action_choice = tk.StringVar(value='repair')
+        
+        # Repair option
+        repair_frame = ttk.Frame(options_frame)
+        repair_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Radiobutton(repair_frame, text="Repair Installation", 
+                       variable=self.action_choice, value='repair').pack(anchor='w')
+        ttk.Label(repair_frame, text="Fix missing files, shortcuts, and registry entries", 
+                 font=('Arial', 8), foreground='gray').pack(anchor='w', padx=20)
+        
+        # Modify option
+        modify_frame = ttk.Frame(options_frame)
+        modify_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Radiobutton(modify_frame, text="Modify Installation", 
+                       variable=self.action_choice, value='modify').pack(anchor='w')
+        ttk.Label(modify_frame, text="Change components, shortcuts, or installation location", 
+                 font=('Arial', 8), foreground='gray').pack(anchor='w', padx=20)
+        
+        # Reinstall option
+        reinstall_frame = ttk.Frame(options_frame)
+        reinstall_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Radiobutton(reinstall_frame, text="Reinstall (Replace Current)", 
+                       variable=self.action_choice, value='reinstall').pack(anchor='w')
+        ttk.Label(reinstall_frame, text="Remove current installation and install fresh copy", 
+                 font=('Arial', 8), foreground='gray').pack(anchor='w', padx=20)
+        
+        # Uninstall option
+        uninstall_frame = ttk.Frame(options_frame)
+        uninstall_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Radiobutton(uninstall_frame, text="Uninstall", 
+                       variable=self.action_choice, value='uninstall').pack(anchor='w')
+        ttk.Label(uninstall_frame, text="Completely remove MetaCLI from your computer", 
+                 font=('Arial', 8), foreground='gray').pack(anchor='w', padx=20)
+        
+        # Update next button to handle action choice
+        self.next_button.configure(command=self._handle_existing_installation_choice)
+        
+    def _handle_existing_installation_choice(self):
+        """Handle the user's choice for existing installation"""
+        choice = self.action_choice.get()
+        
+        # Update the installer mode based on choice
+        if choice == 'reinstall':
+            # For reinstall, we'll uninstall first then install
+            self.mode = 'install'
+            self._reinstall_mode = True
+        else:
+            self.mode = choice
+            
+        # Update window title
+        mode_titles = {
+            'repair': 'MetaCLI Repair',
+            'modify': 'MetaCLI Modify Installation', 
+            'uninstall': 'MetaCLI Uninstall',
+            'install': 'MetaCLI Reinstall'
+        }
+        
+        if hasattr(self, '_reinstall_mode') and self._reinstall_mode:
+            self.root.title('MetaCLI Reinstall')
+        else:
+            self.root.title(mode_titles.get(self.mode, 'MetaCLI Setup'))
+        
+        # Reset welcome page and continue with normal flow
+        for widget in self.welcome_frame.winfo_children():
+            widget.destroy()
+            
+        self.setup_welcome_page()
+        
+        # Restore normal next button behavior
+        self.next_button.configure(command=self.go_next)
+        
+        # Move to next page
+        self.go_next()
         
     def setup_options_page(self):
         """Setup the installation options page"""
-        # Title
-        title_label = ttk.Label(self.options_frame, text="Installation Options", 
+        # Dynamic title based on mode
+        mode_titles = {
+            'install': 'Installation Options',
+            'repair': 'Repair Options',
+            'modify': 'Modify Installation',
+            'uninstall': 'Uninstall Options'
+        }
+        
+        title_label = ttk.Label(self.options_frame, text=mode_titles.get(self.mode, 'Installation Options'), 
                                font=('Arial', 14, 'bold'))
         title_label.pack(pady=(10, 20))
         
-        # Installation path
+        if self.mode == 'uninstall':
+            self._setup_uninstall_options()
+        else:
+            self._setup_install_modify_repair_options()
+    
+    def _setup_uninstall_options(self):
+        """Setup options for uninstall mode"""
+        # Uninstall confirmation
+        confirm_frame = ttk.LabelFrame(self.options_frame, text="Uninstall Confirmation")
+        confirm_frame.pack(fill='x', padx=20, pady=10)
+        
+        warning_text = "Are you sure you want to uninstall MetaCLI?\nThis will remove all installed components."
+        ttk.Label(confirm_frame, text=warning_text, font=('Arial', 10), 
+                 foreground='red', justify='center').pack(pady=10)
+        
+        # Show what will be removed
+        if self.installed_components:
+            remove_frame = ttk.LabelFrame(self.options_frame, text="Components to Remove")
+            remove_frame.pack(fill='x', padx=20, pady=10)
+            
+            for component, installed in self.installed_components.items():
+                if installed:
+                    component_names = {
+                        'gui': '✗ MetaCLI GUI Application',
+                        'cli': '✗ MetaCLI Command Line Interface',
+                        'desktop_shortcuts': '✗ Desktop Shortcuts',
+                        'start_menu_shortcuts': '✗ Start Menu Shortcuts',
+                        'path_entry': '✗ System PATH Entry'
+                    }
+                    text = component_names.get(component, f'✗ {component}')
+                    ttk.Label(remove_frame, text=text, foreground='red').pack(anchor='w', padx=10, pady=2)
+        
+        # Uninstall options
+        options_frame = ttk.LabelFrame(self.options_frame, text="Uninstall Options")
+        options_frame.pack(fill='x', padx=20, pady=10)
+        
+        self.keep_user_data = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_frame, text="Keep user data and settings", 
+                       variable=self.keep_user_data).pack(anchor='w', padx=10, pady=2)
+    
+    def _setup_install_modify_repair_options(self):
+        """Setup options for install, modify, and repair modes"""
+        # Installation path (read-only for modify/repair)
         path_frame = ttk.LabelFrame(self.options_frame, text="Installation Directory")
         path_frame.pack(fill='x', padx=20, pady=10)
         
@@ -277,30 +809,84 @@ class MetaCLIInstaller:
         self.path_entry = ttk.Entry(path_entry_frame, textvariable=self.install_path, width=50)
         self.path_entry.pack(side='left', fill='x', expand=True)
         
-        browse_button = ttk.Button(path_entry_frame, text="Browse...", command=self.browse_install_path)
-        browse_button.pack(side='right', padx=(10, 0))
+        # Disable path editing for modify/repair modes
+        if self.mode in ['modify', 'repair']:
+            self.path_entry.config(state='readonly')
+        else:
+            browse_button = ttk.Button(path_entry_frame, text="Browse...", command=self.browse_install_path)
+            browse_button.pack(side='right', padx=(10, 0))
         
-        # Component information (both CLI and GUI will be installed)
+        # Admin privileges button (only for install mode)
+        if self.mode == 'install':
+            admin_frame = ttk.Frame(path_frame)
+            admin_frame.pack(fill='x', padx=10, pady=(0, 10))
+            
+            admin_button = ttk.Button(admin_frame, text="Request Admin Privileges", command=self.manual_admin_request)
+            admin_button.pack(side='left')
+            
+            admin_info = ttk.Label(admin_frame, text="Required for Program Files installation", 
+                                  font=('Arial', 8), foreground='gray')
+            admin_info.pack(side='left', padx=(10, 0))
+        
+        # Component information
         comp_frame = ttk.LabelFrame(self.options_frame, text="Components")
         comp_frame.pack(fill='x', padx=20, pady=10)
         
-        ttk.Label(comp_frame, text="✓ MetaCLI GUI Application", foreground='green').pack(anchor='w', padx=10, pady=5)
-        ttk.Label(comp_frame, text="✓ MetaCLI Command Line Interface", foreground='green').pack(anchor='w', padx=10, pady=5)
-        ttk.Label(comp_frame, text="Both components will be installed automatically.", font=('Arial', 8), foreground='gray').pack(anchor='w', padx=10, pady=(0, 5))
+        if self.mode == 'install':
+            ttk.Label(comp_frame, text="✓ MetaCLI GUI Application", foreground='green').pack(anchor='w', padx=10, pady=5)
+            ttk.Label(comp_frame, text="✓ MetaCLI Command Line Interface", foreground='green').pack(anchor='w', padx=10, pady=5)
+            ttk.Label(comp_frame, text="Both components will be installed automatically.", 
+                     font=('Arial', 8), foreground='gray').pack(anchor='w', padx=10, pady=(0, 5))
+        elif self.mode == 'repair':
+            ttk.Label(comp_frame, text="✓ All components will be repaired", foreground='blue').pack(anchor='w', padx=10, pady=5)
+            ttk.Label(comp_frame, text="Missing files will be restored and corrupted files will be replaced.", 
+                     font=('Arial', 8), foreground='gray').pack(anchor='w', padx=10, pady=(0, 5))
+        elif self.mode == 'modify':
+            # Show current installation status and allow modification
+            if self.installed_components:
+                for component, installed in self.installed_components.items():
+                    component_names = {
+                        'gui': 'MetaCLI GUI Application',
+                        'cli': 'MetaCLI Command Line Interface',
+                        'desktop_shortcuts': 'Desktop Shortcuts',
+                        'start_menu_shortcuts': 'Start Menu Shortcuts',
+                        'path_entry': 'System PATH Entry'
+                    }
+                    name = component_names.get(component, component)
+                    status = "✓ Installed" if installed else "✗ Not Installed"
+                    color = 'green' if installed else 'red'
+                    ttk.Label(comp_frame, text=f"{status} - {name}", foreground=color).pack(anchor='w', padx=10, pady=2)
         
         # Additional options
         options_frame = ttk.LabelFrame(self.options_frame, text="Additional Options")
         options_frame.pack(fill='x', padx=20, pady=10)
         
+        # Set default values based on existing installation for modify mode
+        if self.mode == 'modify' and self.installed_components:
+            self.add_to_path.set(self.installed_components.get('path_entry', False))
+            self.create_shortcuts.set(self.installed_components.get('desktop_shortcuts', False))
+            self.create_start_menu.set(self.installed_components.get('start_menu_shortcuts', False))
+            self.register_uninstaller.set(True)  # Always true if we're modifying
+        
         ttk.Checkbutton(options_frame, text="Add MetaCLI to system PATH", variable=self.add_to_path).pack(anchor='w', padx=10, pady=2)
         ttk.Checkbutton(options_frame, text="Create desktop shortcuts", variable=self.create_shortcuts).pack(anchor='w', padx=10, pady=2)
         ttk.Checkbutton(options_frame, text="Create Start Menu shortcuts", variable=self.create_start_menu).pack(anchor='w', padx=10, pady=2)
-        ttk.Checkbutton(options_frame, text="Register in Add/Remove Programs", variable=self.register_uninstaller).pack(anchor='w', padx=10, pady=2)
+        
+        # Only show uninstaller registration for install mode
+        if self.mode == 'install':
+            ttk.Checkbutton(options_frame, text="Register in Add/Remove Programs", variable=self.register_uninstaller).pack(anchor='w', padx=10, pady=2)
         
     def setup_progress_page(self):
         """Setup the installation progress page"""
-        # Title
-        title_label = ttk.Label(self.progress_frame, text="Installing MetaCLI", 
+        # Dynamic title based on mode
+        mode_titles = {
+            'install': 'Installing MetaCLI',
+            'repair': 'Repairing MetaCLI',
+            'modify': 'Modifying MetaCLI',
+            'uninstall': 'Uninstalling MetaCLI'
+        }
+        
+        title_label = ttk.Label(self.progress_frame, text=mode_titles.get(self.mode, 'Installing MetaCLI'), 
                                font=('Arial', 14, 'bold'))
         title_label.pack(pady=(20, 10))
         
@@ -310,8 +896,15 @@ class MetaCLIInstaller:
                                           maximum=100, length=400)
         self.progress_bar.pack(pady=10)
         
-        # Status label
-        self.status_label = ttk.Label(self.progress_frame, text="Preparing installation...")
+        # Dynamic status label based on mode
+        mode_status = {
+            'install': 'Preparing installation...',
+            'repair': 'Preparing repair...',
+            'modify': 'Preparing modification...',
+            'uninstall': 'Preparing uninstallation...'
+        }
+        
+        self.status_label = ttk.Label(self.progress_frame, text=mode_status.get(self.mode, 'Preparing installation...'))
         self.status_label.pack(pady=10)
         
         # Detailed log
@@ -327,32 +920,94 @@ class MetaCLIInstaller:
         
     def setup_complete_page(self):
         """Setup the installation complete page"""
-        # Title
-        title_label = ttk.Label(self.complete_frame, text="Installation Complete", 
-                               font=('Arial', 16, 'bold'), foreground='green')
+        # Dynamic title based on mode
+        mode_titles = {
+            'install': 'Installation Complete',
+            'repair': 'Repair Complete',
+            'modify': 'Modification Complete',
+            'uninstall': 'Uninstall Complete'
+        }
+        
+        title_color = 'green' if self.mode != 'uninstall' else 'blue'
+        title_label = ttk.Label(self.complete_frame, text=mode_titles.get(self.mode, 'Installation Complete'), 
+                               font=('Arial', 16, 'bold'), foreground=title_color)
         title_label.pack(pady=(30, 20))
         
-        # Success message
-        success_text = (
-            "MetaCLI has been successfully installed on your computer.\n\n"
-            "You can now use MetaCLI from the command line or launch the GUI application\n"
-            "from the Start Menu or desktop shortcuts."
-        )
+        # Dynamic success message based on mode
+        mode_messages = {
+            'install': (
+                "MetaCLI has been successfully installed on your computer.\n\n"
+                "You can now use MetaCLI from the command line or launch the GUI application\n"
+                "from the Start Menu or desktop shortcuts."
+            ),
+            'repair': (
+                "MetaCLI has been successfully repaired.\n\n"
+                "All missing files have been restored and corrupted files have been replaced.\n"
+                "You can now use MetaCLI normally."
+            ),
+            'modify': (
+                "MetaCLI installation has been successfully modified.\n\n"
+                "The requested components have been added or removed as specified.\n"
+                "You can now use MetaCLI with the updated configuration."
+            ),
+            'uninstall': (
+                "MetaCLI has been successfully uninstalled from your computer.\n\n"
+                "All selected components have been removed.\n"
+                "Thank you for using MetaCLI!"
+            )
+        }
+        
+        success_text = mode_messages.get(self.mode, mode_messages['install'])
         success_label = ttk.Label(self.complete_frame, text=success_text, justify='center')
         success_label.pack(pady=20)
         
-        # Launch options
-        launch_frame = ttk.LabelFrame(self.complete_frame, text="Launch Options")
-        launch_frame.pack(padx=20, pady=20)
-        
-        self.launch_gui = tk.BooleanVar(value=True)
-        ttk.Checkbutton(launch_frame, text="Launch MetaCLI GUI now", variable=self.launch_gui).pack(anchor='w', padx=10, pady=10)
+        # Launch options (only for install, repair, and modify modes)
+        if self.mode != 'uninstall':
+            launch_frame = ttk.LabelFrame(self.complete_frame, text="Launch Options")
+            launch_frame.pack(padx=20, pady=20)
+            
+            self.launch_gui = tk.BooleanVar(value=True)
+            ttk.Checkbutton(launch_frame, text="Launch MetaCLI GUI now", variable=self.launch_gui).pack(anchor='w', padx=10, pady=10)
+        else:
+            # For uninstall mode, don't show launch options
+            self.launch_gui = tk.BooleanVar(value=False)
         
     def browse_install_path(self):
         """Browse for installation directory"""
         directory = filedialog.askdirectory(initialdir=self.install_path.get())
         if directory:
             self.install_path.set(directory)
+    
+    def manual_admin_request(self):
+        """Manually request administrator privileges"""
+        try:
+            import ctypes
+            if ctypes.windll.shell32.IsUserAnAdmin():
+                messagebox.showinfo(
+                    "Administrator Privileges",
+                    "The installer is already running with administrator privileges."
+                )
+                return
+            
+            response = messagebox.askyesno(
+                "Request Administrator Privileges",
+                "This will restart the installer with administrator privileges.\n\n"
+                "This is required for installing to Program Files or system directories.\n\n"
+                "Do you want to continue?"
+            )
+            
+            if response:
+                # Close current installer and restart with admin privileges
+                self.root.quit()
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable, " ".join(sys.argv + ['--request-admin']), None, 1
+                )
+                
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"Failed to request administrator privileges: {e}"
+            )
             
     def go_back(self):
         """Go to previous page"""
@@ -478,67 +1133,229 @@ class MetaCLIInstaller:
         install_thread.start()
         
     def run_installation(self):
-        """Run the actual installation process"""
+        """Run the actual installation process based on mode"""
         try:
-            self.log_message("Starting MetaCLI installation...")
-            self.logger.info("Installation started")
-            
-            # Step 1: Check dependencies
-            self.update_progress(0, "Checking Python dependencies...")
-            self.check_and_install_dependencies()
-            
-            if self.installation_cancelled:
-                return
-            
-            # Step 2: Create installation directory
-            self.update_progress(15, "Creating installation directory...")
-            self.create_install_directory()
-            
-            # Step 3: Add antivirus exclusion
-            self.update_progress(25, "Adding antivirus exclusion...")
-            self.add_antivirus_exclusion()
-            
-            # Step 4: Copy files
-            self.update_progress(35, "Copying application files...")
-            self.copy_application_files()
-            
-            # Step 5: Update system PATH
-            if self.add_to_path.get():
-                self.update_progress(55, "Adding to system PATH...")
-                self.add_to_system_path()
-            
-            # Step 6: Create desktop shortcuts
-            if self.create_shortcuts.get():
-                self.update_progress(70, "Creating desktop shortcuts...")
-                self.create_desktop_shortcuts()
-                
-            # Step 7: Create Start Menu shortcuts
-            if self.create_start_menu.get():
-                self.update_progress(85, "Creating Start Menu shortcuts...")
-                self.create_start_menu_shortcuts()
-                
-            # Step 8: Register uninstaller
-            if self.register_uninstaller.get():
-                self.update_progress(95, "Registering application...")
-                self.register_application()
-                
-            # Step 9: Complete
-            self.update_progress(100, "Installation completed successfully!")
-            self.installation_complete = True
-            self.logger.info("Installation completed successfully")
-            
-            # Enable next button and update button states
-            self.root.after(0, lambda: self.next_button.config(state='normal'))
-            self.root.after(0, self.update_buttons)
+            if self.mode == 'install':
+                self._run_install()
+            elif self.mode == 'repair':
+                self._run_repair()
+            elif self.mode == 'modify':
+                self._run_modify()
+            elif self.mode == 'uninstall':
+                self._run_uninstall()
             
         except Exception as e:
-            error_msg = f"Installation failed: {str(e)}"
+            error_msg = f"{self.mode.capitalize()} failed: {str(e)}"
             self.log_message(error_msg)
             self.logger.error(error_msg, exc_info=True)
-            self.root.after(0, lambda: messagebox.showerror("Installation Error", error_msg))
+            self.root.after(0, lambda: messagebox.showerror(f"{self.mode.capitalize()} Error", error_msg))
             # Re-enable buttons on error
             self.root.after(0, lambda: self.next_button.config(state='normal'))
             self.root.after(0, lambda: self.back_button.config(state='normal'))
+    
+    def _run_install(self):
+        """Run installation process"""
+        self.log_message("Starting MetaCLI installation...")
+        self.logger.info("Installation started")
+        
+        # Step 1: Check dependencies
+        self.update_progress(0, "Checking Python dependencies...")
+        self.check_and_install_dependencies()
+        
+        if self.installation_cancelled:
+            return
+        
+        # Step 2: Create installation directory
+        self.update_progress(15, "Creating installation directory...")
+        self.create_install_directory()
+        
+        # Step 3: Add antivirus exclusion
+        self.update_progress(25, "Adding antivirus exclusion...")
+        self.add_antivirus_exclusion()
+        
+        # Step 4: Copy files
+        self.update_progress(35, "Copying application files...")
+        self.copy_application_files()
+        
+        # Step 5: Update system PATH
+        if self.add_to_path.get():
+            self.update_progress(55, "Adding to system PATH...")
+            self.add_to_system_path()
+        
+        # Step 6: Create desktop shortcuts
+        if self.create_shortcuts.get():
+            self.update_progress(70, "Creating desktop shortcuts...")
+            self.create_desktop_shortcuts()
+            
+        # Step 7: Create Start Menu shortcuts
+        if self.create_start_menu.get():
+            self.update_progress(85, "Creating Start Menu shortcuts...")
+            self.create_start_menu_shortcuts()
+            
+        # Step 8: Register uninstaller
+        if self.register_uninstaller.get():
+            self.update_progress(95, "Registering application...")
+            self.register_application()
+            
+        # Step 9: Complete
+        self.update_progress(100, "Installation completed successfully!")
+        self.installation_complete = True
+        self.logger.info("Installation completed successfully")
+        
+        # Enable next button and update button states
+        self.root.after(0, lambda: self.next_button.config(state='normal'))
+        self.root.after(0, self.update_buttons)
+    
+    def _run_repair(self):
+        """Run repair process"""
+        self.log_message("Starting MetaCLI repair...")
+        self.logger.info("Repair started")
+        
+        # Step 1: Check dependencies
+        self.update_progress(0, "Checking Python dependencies...")
+        self.check_and_install_dependencies()
+        
+        if self.installation_cancelled:
+            return
+        
+        # Step 2: Verify/create installation directory
+        self.update_progress(15, "Verifying installation directory...")
+        self.create_install_directory()
+        
+        # Step 3: Copy/restore files
+        self.update_progress(35, "Restoring application files...")
+        self.copy_application_files()
+        
+        # Step 4: Restore system integration based on existing installation
+        if self.installed_components.get('path_entry', False):
+            self.update_progress(55, "Restoring system PATH...")
+            self.add_to_system_path()
+        
+        if self.installed_components.get('desktop_shortcuts', False):
+            self.update_progress(70, "Restoring desktop shortcuts...")
+            self.create_desktop_shortcuts()
+            
+        if self.installed_components.get('start_menu_shortcuts', False):
+            self.update_progress(85, "Restoring Start Menu shortcuts...")
+            self.create_start_menu_shortcuts()
+            
+        # Step 5: Re-register application
+        self.update_progress(95, "Re-registering application...")
+        self.register_application()
+            
+        # Step 6: Complete
+        self.update_progress(100, "Repair completed successfully!")
+        self.installation_complete = True
+        self.logger.info("Repair completed successfully")
+        
+        # Enable next button and update button states
+        self.root.after(0, lambda: self.next_button.config(state='normal'))
+        self.root.after(0, self.update_buttons)
+    
+    def _run_modify(self):
+        """Run modification process"""
+        self.log_message("Starting MetaCLI modification...")
+        self.logger.info("Modification started")
+        
+        # Step 1: Handle PATH changes
+        self.update_progress(20, "Updating system PATH...")
+        current_path = self.installed_components.get('path_entry', False)
+        requested_path = self.add_to_path.get()
+        
+        if current_path and not requested_path:
+            # Remove from PATH
+            self.system_integration.remove_from_path(str(Path(self.install_path.get())))
+            self.log_message("Removed MetaCLI from system PATH")
+        elif not current_path and requested_path:
+            # Add to PATH
+            self.add_to_system_path()
+        
+        # Step 2: Handle desktop shortcuts
+        self.update_progress(40, "Updating desktop shortcuts...")
+        current_desktop = self.installed_components.get('desktop_shortcuts', False)
+        requested_desktop = self.create_shortcuts.get()
+        
+        if current_desktop and not requested_desktop:
+            # Remove desktop shortcuts
+            self.system_integration.remove_desktop_shortcuts()
+            self.log_message("Removed desktop shortcuts")
+        elif not current_desktop and requested_desktop:
+            # Create desktop shortcuts
+            self.create_desktop_shortcuts()
+        
+        # Step 3: Handle Start Menu shortcuts
+        self.update_progress(60, "Updating Start Menu shortcuts...")
+        current_start_menu = self.installed_components.get('start_menu_shortcuts', False)
+        requested_start_menu = self.create_start_menu.get()
+        
+        if current_start_menu and not requested_start_menu:
+            # Remove Start Menu shortcuts
+            self.system_integration.remove_start_menu_shortcuts()
+            self.log_message("Removed Start Menu shortcuts")
+        elif not current_start_menu and requested_start_menu:
+            # Create Start Menu shortcuts
+            self.create_start_menu_shortcuts()
+        
+        # Step 4: Update registry
+        self.update_progress(80, "Updating registration...")
+        self.register_application()
+        
+        # Step 5: Complete
+        self.update_progress(100, "Modification completed successfully!")
+        self.installation_complete = True
+        self.logger.info("Modification completed successfully")
+        
+        # Enable next button and update button states
+        self.root.after(0, lambda: self.next_button.config(state='normal'))
+        self.root.after(0, self.update_buttons)
+    
+    def _run_uninstall(self):
+        """Run uninstallation process"""
+        self.log_message("Starting MetaCLI uninstallation...")
+        self.logger.info("Uninstallation started")
+        
+        try:
+            # Step 1: Remove shortcuts
+            self.update_progress(20, "Removing shortcuts...")
+            self.system_integration.remove_all_shortcuts()
+            self.log_message("Removed all shortcuts")
+            
+            # Step 2: Remove from PATH
+            self.update_progress(40, "Removing from system PATH...")
+            install_path = self.existing_installation.get('install_location', '')
+            if install_path:
+                self.system_integration.remove_from_path(install_path)
+                self.log_message("Removed from system PATH")
+            
+            # Step 3: Remove registry entries
+            self.update_progress(60, "Removing registry entries...")
+            self.system_integration.unregister_uninstaller()
+            self.log_message("Removed registry entries")
+            
+            # Step 4: Remove files (unless keeping user data)
+            if not getattr(self, 'keep_user_data', tk.BooleanVar()).get():
+                self.update_progress(80, "Removing application files...")
+                if install_path and Path(install_path).exists():
+                    shutil.rmtree(install_path, ignore_errors=True)
+                    self.log_message(f"Removed installation directory: {install_path}")
+            else:
+                self.log_message("Kept user data and settings as requested")
+            
+            # Step 5: Complete
+            self.update_progress(100, "Uninstallation completed successfully!")
+            self.installation_complete = True
+            self.logger.info("Uninstallation completed successfully")
+            
+        except Exception as e:
+            self.log_message(f"Warning: Some components could not be removed: {str(e)}")
+            self.logger.warning(f"Partial uninstallation: {str(e)}")
+            # Continue to completion even if some steps fail
+            self.update_progress(100, "Uninstallation completed with warnings")
+            self.installation_complete = True
+        
+        # Enable next button and update button states
+        self.root.after(0, lambda: self.next_button.config(state='normal'))
+        self.root.after(0, self.update_buttons)
             
     def update_progress(self, percentage, status):
         """Update progress bar and status"""
@@ -550,13 +1367,18 @@ class MetaCLIInstaller:
         """Add message to installation log"""
         timestamp = time.strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}\n"
-        self.root.after(0, lambda: self.log_text.insert(tk.END, log_entry))
-        self.root.after(0, lambda: self.log_text.see(tk.END))
+        print(log_entry.strip())  # Always print to console
+        
+        # Only update GUI log if it exists
+        if hasattr(self, 'log_text') and self.log_text:
+            self.root.after(0, lambda: self.log_text.insert(tk.END, log_entry))
+            self.root.after(0, lambda: self.log_text.see(tk.END))
         
     def check_and_install_dependencies(self):
         """Check and install required Python dependencies"""
         if self.dependency_manager:
             try:
+                # First install regular dependencies
                 installed, failed = self.dependency_manager.install_missing_requirements(self.dependencies)
                 
                 if failed:
@@ -568,6 +1390,13 @@ class MetaCLIInstaller:
                     self.log_message(f"Successfully installed: {', '.join(installed)}")
                 else:
                     self.log_message("All dependencies are already satisfied")
+                
+                # Install pywin32 for shortcut creation
+                self.log_message("Installing pywin32 for shortcut creation...")
+                if self.dependency_manager.install_pywin32():
+                    self.log_message("✓ pywin32 installation completed")
+                else:
+                    self.log_message("⚠️ pywin32 installation failed, shortcuts will use fallback method")
                     
             except Exception as e:
                 self.log_message(f"Dependency installation error: {str(e)}")
@@ -581,18 +1410,72 @@ class MetaCLIInstaller:
         """Install a single dependency using pip"""
         self.log_message(f"Installing {dependency}...")
         try:
+            # Set creation flags for Windows to hide terminal windows
+            creation_flags = 0
+            if hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                creation_flags = subprocess.CREATE_NO_WINDOW
+                
             result = subprocess.run([sys.executable, '-m', 'pip', 'install', dependency], 
-                                  capture_output=True, text=True, check=True)
+                                  capture_output=True, text=True, check=True,
+                                  creationflags=creation_flags)
             self.log_message(f"✓ Successfully installed {dependency}")
         except subprocess.CalledProcessError as e:
             self.log_message(f"✗ Failed to install {dependency}: {e.stderr}")
             raise Exception(f"Failed to install dependency: {dependency}")
             
+    def _requires_admin_privileges(self, install_dir: Path) -> bool:
+        """Check if the installation directory requires administrator privileges"""
+        # Common system directories that require admin privileges
+        admin_dirs = [
+            Path("C:/Program Files"),
+            Path("C:/Program Files (x86)"),
+            Path("C:/Windows"),
+            Path("C:/ProgramData")
+        ]
+        
+        try:
+            # Check if the install directory is under any admin-required directory
+            for admin_dir in admin_dirs:
+                try:
+                    install_dir.resolve().relative_to(admin_dir.resolve())
+                    return True
+                except ValueError:
+                    continue
+            
+            # Try to create a test file to check write permissions
+            test_dir = install_dir.parent if not install_dir.exists() else install_dir
+            test_file = test_dir / f"test_write_{os.getpid()}.tmp"
+            
+            try:
+                test_file.touch()
+                test_file.unlink()
+                return False
+            except (PermissionError, OSError):
+                return True
+                
+        except Exception:
+            # If we can't determine, assume admin is required for safety
+            return True
+            
+        return False
+    
+
+    
     def create_install_directory(self):
         """Create the installation directory"""
         install_dir = Path(self.install_path.get())
-        install_dir.mkdir(parents=True, exist_ok=True)
-        self.log_message(f"Created installation directory: {install_dir}")
+        
+        # Verify admin privileges are present
+        if not self.system_integration.is_admin():
+            self.log_message("ERROR: Administrator privileges are required for installation.")
+            raise PermissionError("Administrator privileges are required for MetaCLI installation.")
+        
+        try:
+            install_dir.mkdir(parents=True, exist_ok=True)
+            self.log_message(f"Created installation directory: {install_dir}")
+        except PermissionError as e:
+            self.log_message(f"Permission error: {e}")
+            raise PermissionError(f"Cannot create directory '{install_dir}'. Administrator privileges are required.")
         
     def copy_application_files(self):
         """Copy application files to installation directory"""
@@ -721,10 +1604,7 @@ class MetaCLIInstaller:
         if self.system_integration:
             success = self.system_integration.register_uninstaller(
                 install_dir,
-                app_name="MetaCLI",
-                version="1.0.0",
-                publisher="MetaCLI Team",
-                uninstall_string=str(install_dir / "uninstall.exe")
+                version="1.0.0"
             )
             if success:
                 self.log_message("Application registered in Add/Remove Programs")
@@ -829,7 +1709,11 @@ class MetaCLIInstaller:
             try:
                 gui_path = Path(self.install_path.get()) / 'MetaCLI-GUI.exe'
                 if gui_path.exists():
-                    subprocess.Popen([str(gui_path)])
+                    # Set creation flags for Windows to prevent console window
+                    creation_flags = 0
+                    if hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                        creation_flags = subprocess.CREATE_NO_WINDOW
+                    subprocess.Popen([str(gui_path)], creationflags=creation_flags)
             except Exception as e:
                 messagebox.showwarning("Launch Error", f"Could not launch MetaCLI GUI: {str(e)}")
                 
@@ -906,11 +1790,236 @@ class MetaCLIInstaller:
     def run(self):
         """Run the installer"""
         try:
+            # Force window to front and focus
+            self.root.lift()
+            self.root.attributes('-topmost', True)
+            self.root.after_idle(lambda: self.root.attributes('-topmost', False))
+            self.root.focus_force()
             self.root.mainloop()
         finally:
             self.cleanup_singleton()
 
 
+def request_admin_privileges():
+    """Check if current process has administrator privileges"""
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except Exception as e:
+        print(f"Failed to check admin privileges: {e}")
+        return False
+
+def check_admin_needed():
+    """Check if admin privileges are needed based on installation requirements"""
+    try:
+        # Check if we need admin for system-wide PATH modification
+        # Check if we need admin for system directories
+        # Check if we need admin for Windows Defender exclusions
+        
+        admin_required_reasons = []
+        
+        # Check default install path
+        default_path = Path.home() / 'AppData' / 'Local' / 'MetaCLI'
+        admin_dirs = [
+            Path("C:/Program Files"),
+            Path("C:/Program Files (x86)"),
+            Path("C:/Windows"),
+            Path("C:/ProgramData")
+        ]
+        
+        for admin_dir in admin_dirs:
+            try:
+                default_path.resolve().relative_to(admin_dir.resolve())
+                admin_required_reasons.append(f"Installation path requires admin: {default_path}")
+                break
+            except ValueError:
+                continue
+        
+        # Check if we can write to system PATH
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
+                              r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+                              0, winreg.KEY_READ) as key:
+                # If we can't write to system PATH, we might need admin for system-wide installation
+                pass
+        except PermissionError:
+            admin_required_reasons.append("System PATH modification requires admin")
+        except Exception:
+            pass
+        
+        # Check Windows Defender exclusion capability
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['powershell', '-Command', 'Get-MpPreference -ErrorAction SilentlyContinue'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if result.returncode != 0:
+                admin_required_reasons.append("Windows Defender exclusion requires admin")
+        except Exception:
+            pass
+        
+        if admin_required_reasons:
+            print(f"Admin privileges needed for: {'; '.join(admin_required_reasons)}")
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"Error checking admin requirements: {e}")
+        return False
+
+def parse_arguments():
+    """Parse command line arguments to determine installer mode"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='MetaCLI Installer - Install, Repair, Modify, or Uninstall MetaCLI',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python metacli_installer.py                    # Install MetaCLI
+  python metacli_installer.py --repair           # Repair existing installation
+  python metacli_installer.py --modify           # Modify installation components
+  python metacli_installer.py --uninstall        # Uninstall MetaCLI
+  python metacli_installer.py --request-admin    # Internal flag for admin elevation"""
+    )
+    
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('--repair', action='store_true',
+                           help='Repair existing MetaCLI installation')
+    mode_group.add_argument('--modify', action='store_true',
+                           help='Modify existing MetaCLI installation components')
+    mode_group.add_argument('--uninstall', action='store_true',
+                           help='Uninstall MetaCLI from the system')
+    mode_group.add_argument('--request-admin', action='store_true',
+                           help='Internal flag for administrator privilege elevation')
+    
+    args = parser.parse_args()
+    
+    # Determine mode
+    if args.repair:
+        return 'repair'
+    elif args.modify:
+        return 'modify'
+    elif args.uninstall:
+        return 'uninstall'
+    elif args.request_admin:
+        return 'request_admin'
+    else:
+        return 'install'
+
+def handle_admin_privileges(mode):
+    """Handle administrator privilege requests based on mode"""
+    if mode == 'request_admin':
+        # This should never be reached in normal operation
+        print("Internal admin request flag detected - this should not happen.")
+        return
+    
+    # Check if admin privileges are needed for the current mode
+    needs_admin = mode in ['install', 'repair', 'uninstall'] and check_admin_needed()
+    
+    if needs_admin:
+        try:
+            import ctypes
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                mode_text = {
+                    'install': 'installation',
+                    'repair': 'repair',
+                    'uninstall': 'uninstallation'
+                }.get(mode, 'operation')
+                
+                print(f"MetaCLI requires administrator privileges for {mode_text}.")
+                print("Requesting elevated permissions...")
+                
+                # Create new argument list without --request-admin to avoid loops
+                new_args = [arg for arg in sys.argv if arg != '--request-admin']
+                args_string = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in new_args)
+                
+                try:
+                    # Request elevation and exit immediately
+                    result = ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", sys.executable, args_string, None, 1
+                    )
+                    if result > 32:  # Success
+                        print("Elevation request sent. Exiting current process...")
+                        sys.exit(0)
+                    else:
+                        raise Exception(f"ShellExecuteW failed with code {result}")
+                except Exception as shell_error:
+                    print(f"\nFailed to request administrator privileges: {shell_error}")
+                    print(f"Administrator privileges are required for MetaCLI {mode}.")
+                    print("Please run the installer as administrator manually.")
+                    input("Press Enter to exit...")
+                    sys.exit(1)
+        except ImportError:
+            print(f"\nCannot check administrator privileges on this system.")
+            print(f"Administrator privileges may be required for MetaCLI {mode}.")
+            print("If installation fails, please run as administrator.")
+        except Exception as e:
+            print(f"\nError checking administrator privileges: {e}")
+            print(f"Administrator privileges may be required for MetaCLI {mode}.")
+            print("If installation fails, please run as administrator.")
+
+def main():
+    """Main entry point with comprehensive error handling"""
+    try:
+        print("Starting MetaCLI Installer...")
+        
+        # Parse command line arguments
+        mode = parse_arguments()
+        print(f"Installer mode: {mode}")
+        
+        # Handle admin privileges
+        handle_admin_privileges(mode)
+        
+        # If we reach here, we have the right privileges or don't need them
+        if mode != 'request_admin':
+            print("Initializing installer...")
+            installer = MetaCLIInstaller(mode=mode)
+            print("Starting installer UI...")
+            installer.run()
+            
+    except KeyboardInterrupt:
+        print("\nInstaller interrupted by user.")
+        sys.exit(1)
+    except ImportError as e:
+        print(f"Critical import error: {e}")
+        print("Please ensure all required dependencies are installed.")
+        sys.exit(1)
+    except PermissionError as e:
+        print(f"Permission error: {e}")
+        print("Please run the installer as administrator or check file permissions.")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        print(f"Required file not found: {e}")
+        print("Please ensure the installer package is complete.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error during installer startup: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
+        
+        # Try to show error in GUI if possible
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()  # Hide the main window
+            messagebox.showerror(
+                "MetaCLI Installer Error",
+                f"An unexpected error occurred:\n\n{e}\n\nPlease check the console for more details."
+            )
+            root.destroy()
+        except:
+            pass  # If GUI error display fails, just continue
+            
+        sys.exit(1)
+
+
 if __name__ == '__main__':
-    installer = MetaCLIInstaller()
-    installer.run()
+    main()

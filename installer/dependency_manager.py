@@ -7,7 +7,10 @@ Handles checking and installing Python dependencies
 import subprocess
 import sys
 import importlib
-import pkg_resources
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
 from typing import List, Dict, Tuple, Optional
 import re
 from pathlib import Path
@@ -20,6 +23,7 @@ class DependencyManager:
     def __init__(self, logger_callback=None):
         self.logger_callback = logger_callback or print
         self.pip_executable = self._find_pip_executable()
+        self._package_cache = {}  # Cache for package installation status
         
     def _find_pip_executable(self) -> str:
         """Find the appropriate pip executable"""
@@ -67,13 +71,17 @@ class DependencyManager:
             return requirement.strip(), None, None
             
     def is_package_installed(self, package_name: str) -> bool:
-        """Check if a package is installed"""
+        """Check if a package is installed using metadata (faster than importing)"""
+        # Check cache first
+        if package_name in self._package_cache:
+            return self._package_cache[package_name]['installed']
+            
         try:
-            # Handle special package name mappings
-            import_name = self._get_import_name(package_name)
-            importlib.import_module(import_name)
+            version = metadata.version(package_name)
+            self._package_cache[package_name] = {'installed': True, 'version': version}
             return True
-        except ImportError:
+        except metadata.PackageNotFoundError:
+            self._package_cache[package_name] = {'installed': False, 'version': None}
             return False
             
     def _get_import_name(self, package_name: str) -> str:
@@ -89,10 +97,16 @@ class DependencyManager:
         
     def get_installed_version(self, package_name: str) -> Optional[str]:
         """Get the installed version of a package"""
+        # Check cache first
+        if package_name in self._package_cache:
+            return self._package_cache[package_name]['version']
+            
         try:
-            distribution = pkg_resources.get_distribution(package_name)
-            return distribution.version
-        except pkg_resources.DistributionNotFound:
+            version = metadata.version(package_name)
+            self._package_cache[package_name] = {'installed': True, 'version': version}
+            return version
+        except metadata.PackageNotFoundError:
+            self._package_cache[package_name] = {'installed': False, 'version': None}
             return None
             
     def version_satisfies_requirement(self, installed_version: str, operator: str, required_version: str) -> bool:
@@ -155,10 +169,15 @@ class DependencyManager:
         return result
         
     def check_all_requirements(self, requirements: List[str]) -> Dict[str, Dict[str, any]]:
-        """Check all requirements and return detailed status"""
+        """Check all requirements and return detailed status (optimized)"""
         results = {}
         
-        self.log("Checking Python dependencies...")
+        self.log(f"Checking {len(requirements)} Python dependencies...")
+        
+        # Batch check all requirements
+        satisfied_count = 0
+        upgrade_count = 0
+        missing_count = 0
         
         for requirement in requirements:
             package_name, _, _ = self.parse_requirement(requirement)
@@ -166,11 +185,14 @@ class DependencyManager:
             results[package_name] = result
             
             if result['satisfied']:
-                self.log(f"✓ {package_name} {result['version']} is satisfied")
+                satisfied_count += 1
             elif result['installed']:
-                self.log(f"⚠ {package_name} {result['version']} needs upgrade (requires {requirement})")
+                upgrade_count += 1
             else:
-                self.log(f"✗ {package_name} is not installed (requires {requirement})")
+                missing_count += 1
+        
+        # Summary logging instead of individual package logs
+        self.log(f"Dependencies status: {satisfied_count} satisfied, {upgrade_count} need upgrade, {missing_count} missing")
                 
         return results
         
@@ -196,6 +218,9 @@ class DependencyManager:
             
             if result.returncode == 0:
                 self.log(f"✓ Successfully installed {package_name}")
+                # Clear cache for this package to ensure fresh status
+                if package_name in self._package_cache:
+                    del self._package_cache[package_name]
                 if result.stdout:
                     self.log(f"  Output: {result.stdout.strip()[:200]}...")  # Log first 200 chars
                 return True
@@ -318,6 +343,55 @@ class DependencyManager:
             self.log(f"✗ Error creating virtual environment: {str(e)}")
             return False
             
+    def install_pywin32(self) -> bool:
+        """Install pywin32 specifically for Windows shortcut creation"""
+        if platform.system() != 'Windows':
+            self.log("pywin32 is only needed on Windows")
+            return True
+            
+        try:
+            # Check if pywin32 is already installed
+            if self.is_package_installed('pywin32'):
+                self.log("✓ pywin32 is already installed")
+                return True
+                
+            self.log("Installing pywin32 for shortcut creation...")
+            
+            # Install pywin32
+            if self.install_package('pywin32>=306'):
+                # Run post-install script for pywin32
+                try:
+                    import win32api
+                    self.log("✓ pywin32 installed and working")
+                    return True
+                except ImportError:
+                    # Try to run the post-install script
+                    self.log("Running pywin32 post-install script...")
+                    try:
+                        result = subprocess.run(
+                            [sys.executable, '-c', 'import win32com.client; print("pywin32 working")'],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+                        )
+                        if result.returncode == 0:
+                            self.log("✓ pywin32 post-install completed")
+                            return True
+                        else:
+                            self.log(f"⚠️ pywin32 post-install failed: {result.stderr}")
+                            return False
+                    except Exception as e:
+                        self.log(f"⚠️ pywin32 post-install error: {str(e)}")
+                        return False
+            else:
+                self.log("✗ Failed to install pywin32")
+                return False
+                
+        except Exception as e:
+            self.log(f"✗ Error installing pywin32: {str(e)}")
+            return False
+    
     def get_system_info(self) -> Dict[str, str]:
         """Get system information for debugging"""
         info = {

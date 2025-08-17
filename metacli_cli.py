@@ -95,11 +95,16 @@ class MetaCLI:
                     
             # Get file list
             files = list(self.scanner.find_files(
-                directory,
+                Path(directory),
                 recursive=recursive,
-                file_types=file_types,
-                max_files=max_files
+                file_types=file_types
             ))
+            
+            # Apply max_files limit
+            if max_files and len(files) > max_files:
+                files = files[:max_files]
+                if verbose:
+                    print(f"Limited to first {max_files} files")
             
             if verbose:
                 print(f"Found {len(files)} files")
@@ -110,21 +115,65 @@ class MetaCLI:
                 if verbose and i % 10 == 0:
                     print(f"Processing file {i+1}/{len(files)}: {file_path.name}")
                     
-                file_info = {
-                    'path': str(file_path),
-                    'name': file_path.name,
-                    'size': file_path.stat().st_size if file_path.exists() else 0,
-                    'modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat() if file_path.exists() else None,
-                    'extension': file_path.suffix.lower()
-                }
-                
-                # Extract metadata if requested
-                if include_metadata:
-                    try:
-                        metadata = self.extractor.extract_metadata(str(file_path))
-                        file_info['metadata'] = metadata
-                    except Exception as e:
-                        file_info['metadata_error'] = str(e)
+                # Enhanced file information with better error handling
+                try:
+                    stat_info = file_path.stat() if file_path.exists() else None
+                    
+                    file_info = {
+                        'path': str(file_path),
+                        'name': file_path.name,
+                        'size': stat_info.st_size if stat_info else 0,
+                        'size_human': self._format_size(stat_info.st_size) if stat_info else '0 B',
+                        'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat() if stat_info else None,
+                        'extension': file_path.suffix.lower(),
+                        'file_type': self._get_file_type(file_path.suffix.lower())
+                    }
+                    
+                    # Extract metadata if requested
+                    if include_metadata:
+                        try:
+                            metadata = self.extractor.extract_metadata(str(file_path))
+                            file_info['metadata'] = metadata
+                            
+                            # Add quick access to key metadata fields
+                            if isinstance(metadata, dict):
+                                if 'basic' in metadata:
+                                    basic = metadata['basic']
+                                    file_info['mime_type'] = basic.get('mime_type')
+                                    file_info['created'] = basic.get('created')
+                                    file_info['accessed'] = basic.get('accessed')
+                                    
+                                    # Add type-specific quick info
+                                    if 'image' in metadata:
+                                        img = metadata['image']
+                                        file_info['dimensions'] = f"{img.get('width', 0)}x{img.get('height', 0)}"
+                                        file_info['megapixels'] = img.get('megapixels')
+                                    elif 'audio' in metadata:
+                                        audio = metadata['audio']
+                                        file_info['duration'] = audio.get('duration_human')
+                                        file_info['bitrate'] = audio.get('bitrate_kbps')
+                                    elif 'video' in metadata:
+                                        video = metadata['video']
+                                        file_info['duration'] = video.get('duration_human')
+                                        file_info['resolution'] = video.get('resolution')
+                                        file_info['quality'] = video.get('quality_category')
+                                    elif 'document' in metadata:
+                                        doc = metadata['document']
+                                        file_info['pages'] = doc.get('pages')
+                                        file_info['words'] = doc.get('words')
+                                        file_info['reading_time'] = doc.get('estimated_reading_time')
+                                        
+                        except Exception as e:
+                            file_info['metadata_error'] = str(e)
+                            if verbose:
+                                print(f"Warning: Failed to extract metadata for {file_path.name}: {e}")
+                                
+                except Exception as e:
+                    file_info = {
+                        'path': str(file_path),
+                        'name': file_path.name,
+                        'error': f'Failed to process file: {str(e)}'
+                    }
                         
                 results.append(file_info)
                 
@@ -264,21 +313,116 @@ class MetaCLI:
             return {}
             
     def _format_as_table(self, metadata: Dict[str, Any]) -> str:
-        """Format metadata as a simple table."""
+        """Format metadata as an enhanced table with better organization."""
         output = ""
-        for category, data in metadata.items():
-            output += f"\n{category.upper()}:\n"
+        
+        # Handle both old and new metadata structure
+        if 'basic' in metadata:
+            # New structure with categorized metadata
+            basic_info = metadata.get('basic', {})
+            
+            # File Information Section
+            output += "\nFILE INFORMATION:\n"
+            output += "=" * 50 + "\n"
+            
+            # Essential file info
+            essential_fields = [
+                ('filename', 'Filename'),
+                ('filepath', 'Full Path'),
+                ('size_human', 'Size'),
+                ('size_kb', 'Size (KB)'),
+                ('size_mb', 'Size (MB)'),
+                ('extension', 'Extension'),
+                ('file_type', 'File Type'),
+                ('mime_type', 'MIME Type')
+            ]
+            
+            for field, label in essential_fields:
+                if field in basic_info:
+                    output += f"{label:20}: {basic_info[field]}\n"
+            
+            # Dates section
+            output += "\nDATES & TIMES:\n"
             output += "-" * 30 + "\n"
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    output += f"{key:20}: {value}\n"
-            else:
-                output += f"{data}\n"
-            output += "\n"
+            date_fields = [
+                ('created', 'Created'),
+                ('modified', 'Modified'),
+                ('accessed', 'Last Accessed'),
+                ('extraction_timestamp', 'Analyzed')
+            ]
+            
+            for field, label in date_fields:
+                if field in basic_info:
+                    value = basic_info[field]
+                    if 'T' in str(value):  # ISO format
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                            value = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            pass
+                    output += f"{label:20}: {value}\n"
+            
+            # Permissions section
+            if any(field in basic_info for field in ['permissions', 'is_readable', 'is_writable']):
+                output += "\nPERMISSIONS:\n"
+                output += "-" * 30 + "\n"
+                perm_fields = [
+                    ('permissions', 'Permissions'),
+                    ('is_readable', 'Readable'),
+                    ('is_writable', 'Writable'),
+                    ('is_executable', 'Executable')
+                ]
+                
+                for field, label in perm_fields:
+                    if field in basic_info:
+                        output += f"{label:20}: {basic_info[field]}\n"
+            
+            # Type-specific metadata sections
+            for section_name, section_data in metadata.items():
+                if section_name == 'basic':
+                    continue
+                    
+                if isinstance(section_data, dict) and section_data:
+                    output += f"\n{section_name.upper()} METADATA:\n"
+                    output += "=" * 50 + "\n"
+                    
+                    for key, value in section_data.items():
+                        if isinstance(value, dict):
+                            output += f"{key.title()}:\n"
+                            for sub_key, sub_value in value.items():
+                                output += f"  {sub_key:18}: {sub_value}\n"
+                        else:
+                            formatted_key = key.replace('_', ' ').title()
+                            output += f"{formatted_key:20}: {value}\n"
+                    output += "\n"
+            
+            # Error information
+            error_fields = [k for k in metadata.keys() if 'error' in k.lower()]
+            if error_fields:
+                output += "\nERRORS/WARNINGS:\n"
+                output += "=" * 50 + "\n"
+                for field in error_fields:
+                    output += f"{field.replace('_', ' ').title()}: {metadata[field]}\n"
+                output += "\n"
+                
+        else:
+            # Legacy structure - simple display
+            for category, data in metadata.items():
+                output += f"\n{category.upper()}:\n"
+                output += "-" * 30 + "\n"
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        formatted_key = key.replace('_', ' ').title()
+                        output += f"{formatted_key:20}: {value}\n"
+                else:
+                    output += f"{data}\n"
+                output += "\n"
+        
         return output
         
     def _generate_scan_summary(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate summary statistics from scan results."""
+        """Generate comprehensive summary statistics from scan results."""
         total_files = len(results)
         total_size = sum(file_info.get('size', 0) for file_info in results)
         
@@ -292,45 +436,165 @@ class MetaCLI:
         file_types = {}
         for file_info in results:
             ext = file_info.get('extension', '')
-            file_type = self._get_file_type(ext)
+            file_type = file_info.get('file_type', self._get_file_type(ext))
             file_types[file_type] = file_types.get(file_type, 0) + 1
+        
+        # Count files with metadata and errors
+        files_with_metadata = sum(1 for file_info in results if 'metadata' in file_info)
+        files_with_errors = sum(1 for file_info in results if 'metadata_error' in file_info or 'error' in file_info)
+        
+        # Calculate size statistics
+        sizes = [file_info.get('size', 0) for file_info in results if file_info.get('size', 0) > 0]
+        size_stats = {}
+        if sizes:
+            size_stats = {
+                'largest_file': max(sizes),
+                'largest_file_human': self._format_size(max(sizes)),
+                'smallest_file': min(sizes),
+                'smallest_file_human': self._format_size(min(sizes)),
+                'average_size': sum(sizes) // len(sizes),
+                'average_size_human': self._format_size(sum(sizes) // len(sizes))
+            }
+        
+        # Type-specific statistics
+        type_stats = {}
+        for file_info in results:
+            if 'metadata' in file_info and isinstance(file_info['metadata'], dict):
+                metadata = file_info['metadata']
+                
+                # Image statistics
+                if 'image' in metadata:
+                    if 'images' not in type_stats:
+                        type_stats['images'] = {'count': 0, 'total_megapixels': 0}
+                    type_stats['images']['count'] += 1
+                    mp = metadata['image'].get('megapixels', 0)
+                    if mp:
+                        type_stats['images']['total_megapixels'] += mp
+                
+                # Audio statistics
+                elif 'audio' in metadata:
+                    if 'audio' not in type_stats:
+                        type_stats['audio'] = {'count': 0, 'total_duration': 0}
+                    type_stats['audio']['count'] += 1
+                    duration = metadata['audio'].get('duration', 0)
+                    if duration:
+                        type_stats['audio']['total_duration'] += duration
+                
+                # Video statistics
+                elif 'video' in metadata:
+                    if 'video' not in type_stats:
+                        type_stats['video'] = {'count': 0, 'total_duration': 0}
+                    type_stats['video']['count'] += 1
+                    duration = metadata['video'].get('duration', 0)
+                    if duration:
+                        type_stats['video']['total_duration'] += duration
+                
+                # Document statistics
+                elif 'document' in metadata:
+                    if 'documents' not in type_stats:
+                        type_stats['documents'] = {'count': 0, 'total_pages': 0, 'total_words': 0}
+                    type_stats['documents']['count'] += 1
+                    pages = metadata['document'].get('pages', 0)
+                    words = metadata['document'].get('words', 0)
+                    if pages:
+                        type_stats['documents']['total_pages'] += pages
+                    if words:
+                        type_stats['documents']['total_words'] += words
             
         return {
             'total_files': total_files,
             'total_size': total_size,
             'total_size_formatted': self._format_size(total_size),
             'extensions': dict(sorted(extensions.items(), key=lambda x: x[1], reverse=True)),
-            'file_types': dict(sorted(file_types.items(), key=lambda x: x[1], reverse=True))
+            'file_types': dict(sorted(file_types.items(), key=lambda x: x[1], reverse=True)),
+            'files_with_metadata': files_with_metadata,
+            'files_with_errors': files_with_errors,
+            'success_rate': f"{((files_with_metadata / total_files) * 100):.1f}%" if total_files > 0 else "0%",
+            'size_statistics': size_stats,
+            'type_statistics': type_stats
         }
         
     def _format_scan_summary(self, summary: Dict[str, Any], results: List[Dict[str, Any]]) -> str:
-        """Format scan summary as readable text."""
+        """Format scan summary as readable text with enhanced statistics."""
         output = "SCAN SUMMARY\n"
         output += "=" * 50 + "\n\n"
         output += f"Total files: {summary['total_files']}\n"
-        output += f"Total size: {summary['total_size_formatted']}\n\n"
+        output += f"Total size: {summary['total_size_formatted']}\n"
+        
+        # Metadata processing statistics
+        if 'files_with_metadata' in summary:
+            output += f"Files with metadata: {summary['files_with_metadata']}\n"
+            output += f"Files with errors: {summary['files_with_errors']}\n"
+            output += f"Success rate: {summary['success_rate']}\n"
+        output += "\n"
+        
+        # Size statistics
+        if 'size_statistics' in summary and summary['size_statistics']:
+            size_stats = summary['size_statistics']
+            output += "SIZE STATISTICS:\n"
+            output += "-" * 30 + "\n"
+            output += f"Largest file: {size_stats['largest_file_human']}\n"
+            output += f"Smallest file: {size_stats['smallest_file_human']}\n"
+            output += f"Average size: {size_stats['average_size_human']}\n\n"
         
         if summary['file_types']:
-            output += "File types:\n"
+            output += "FILE TYPES:\n"
+            output += "-" * 30 + "\n"
             for file_type, count in summary['file_types'].items():
-                output += f"  {file_type}: {count} files\n"
+                percentage = (count / summary['total_files']) * 100
+                output += f"  {file_type}: {count} files ({percentage:.1f}%)\n"
             output += "\n"
             
         if summary['extensions']:
-            output += "Extensions:\n"
+            output += "TOP EXTENSIONS:\n"
+            output += "-" * 30 + "\n"
             for ext, count in list(summary['extensions'].items())[:10]:  # Top 10
-                output += f"  {ext}: {count} files\n"
+                percentage = (count / summary['total_files']) * 100
+                output += f"  {ext}: {count} files ({percentage:.1f}%)\n"
             if len(summary['extensions']) > 10:
                 output += f"  ... and {len(summary['extensions']) - 10} more\n"
+            output += "\n"
+        
+        # Type-specific statistics
+        if 'type_statistics' in summary and summary['type_statistics']:
+            type_stats = summary['type_statistics']
+            output += "TYPE-SPECIFIC STATISTICS:\n"
+            output += "-" * 30 + "\n"
+            
+            if 'images' in type_stats:
+                img_stats = type_stats['images']
+                avg_mp = img_stats['total_megapixels'] / img_stats['count'] if img_stats['count'] > 0 else 0
+                output += f"Images: {img_stats['count']} files, {img_stats['total_megapixels']:.1f} total MP, {avg_mp:.1f} avg MP\n"
+            
+            if 'audio' in type_stats:
+                audio_stats = type_stats['audio']
+                total_duration_min = audio_stats['total_duration'] / 60
+                avg_duration_min = total_duration_min / audio_stats['count'] if audio_stats['count'] > 0 else 0
+                output += f"Audio: {audio_stats['count']} files, {total_duration_min:.1f} total minutes, {avg_duration_min:.1f} avg minutes\n"
+            
+            if 'video' in type_stats:
+                video_stats = type_stats['video']
+                total_duration_min = video_stats['total_duration'] / 60
+                avg_duration_min = total_duration_min / video_stats['count'] if video_stats['count'] > 0 else 0
+                output += f"Video: {video_stats['count']} files, {total_duration_min:.1f} total minutes, {avg_duration_min:.1f} avg minutes\n"
+            
+            if 'documents' in type_stats:
+                doc_stats = type_stats['documents']
+                avg_pages = doc_stats['total_pages'] / doc_stats['count'] if doc_stats['count'] > 0 else 0
+                avg_words = doc_stats['total_words'] / doc_stats['count'] if doc_stats['count'] > 0 else 0
+                output += f"Documents: {doc_stats['count']} files, {doc_stats['total_pages']} total pages ({avg_pages:.1f} avg), {doc_stats['total_words']} total words ({avg_words:.0f} avg)\n"
+            
             output += "\n"
             
         # Sample files
         if results:
-            output += "Sample files (first 5):\n"
+            output += "SAMPLE FILES (first 5):\n"
+            output += "-" * 30 + "\n"
             for file_info in results[:5]:
                 name = Path(file_info['path']).name
                 size = self._format_size(file_info.get('size', 0))
-                output += f"  {name} ({size})\n"
+                file_type = file_info.get('file_type', 'Unknown')
+                output += f"  {name} ({size}, {file_type})\n"
             if len(results) > 5:
                 output += f"  ... and {len(results) - 5} more files\n"
                 

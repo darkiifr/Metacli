@@ -158,31 +158,28 @@ cython_debug/
 #  project, it is recommended to ignore the entire .idea directory.
 .idea/
 
-# Project-specific ignores
-# Build outputs
-build/
-dist/
-installer_build/
-installer_dist/
-installer_output/
+# VS Code
+.vscode/
+*.code-workspace
 
-# Application logs
-*.log
-metacli.log
-metacli_gui.log
-metacli_installer.log
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
 
-# Test files
-test_*.py
-test_*.jpg
-test_*.png
-test_*.pdf
-test_*.docx
-test_*.xlsx
+# Vim
+*.swp
+*.swo
+*~
 
-# Temporary files
-*.tmp
-*.temp
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
 
 # OS generated files
 .DS_Store
@@ -192,36 +189,198 @@ test_*.xlsx
 .Trashes
 ehthumbs.db
 Thumbs.db
+Desktop.ini
 
-# IDE files
-.vscode/
-*.swp
-*.swo
+# Windows
+*.lnk
+
+# Linux
 *~
 
-# Backup files
+# Application-specific files
+# MetaCLI logs
+metacli.log
+metacli_*.log
+metacli_gui.log
+*.log
+
+# MetaCLI configuration and user data
+.metacli_config.json
+user_preferences.json
+settings.json
+
+# MetaCLI installer and build artifacts (large files)
+installer_build/
+installer_dist/
+installer_output/
+MetaCLI_Portable/
+build_output/
+portable_build/
+
+# Executable files
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.app
+
+# PyInstaller build files
+*.spec
+build/
+dist/
+*.manifest
+*.toc
+*.pyz
+localpycs/
+warn-*.txt
+xref-*.html
+
+# Test files and outputs
+test_files/
+test_output/
+test_*.json
+test_*.csv
+test_*.yaml
+test_*.yml
+test_image.jpg
+test_image.py
+
+# Sample files for testing
+sample_files/
+example_files/
+
+# Export files (unless specifically needed)
+export_*.json
+export_*.csv
+export_*.yaml
+export_*.yml
+metadata_export.*
+metadata_*.json
+metadata_*.csv
+metadata_*.yaml
+metadata_*.yml
+output/
+results/
+
+# Cache directories
+.cache/
+cache/
+.metacli_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files
+*.tmp
+*.temp
 *.bak
 *.backup
 
-# Export files
-*.json
-*.csv
-*.xlsx
-metadata_export.*
+# Build artifacts
+build/
+dist/
+*.egg-info/
 
-# Portable package
-MetaCLI_Portable/
+# Documentation builds
+docs/build/
+docs/_build/
 
-# Virtual environment
-.venv/
-venv/
+# Configuration files with sensitive data
+config.ini
+config.json
+.env.local
+.env.production
 
-# Windows specific
-*.exe
-*.msi
-*.lnk
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
 
-# Exclude executables but keep the ones in dist for distribution
-!dist/*.exe
-!MetaCLI_Portable/*.exe
-!installer_output/*.exe
+# Profiling data
+*.prof
+*.pstats
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Linting
+.flake8
+.pylintrc
+
+# Security
+*.pem
+*.key
+*.crt
+*.p12
+
+# Local development
+local_settings.py
+dev_settings.py
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Exclude specific directories that might contain test data
+test_data/
+sample_data/
+example_data/
+
+# Version and update files
+version_info.json
+update_info.json
+latest_version.json
+
+# Hash files
+*.sha256
+*.md5
+hashes.txt
+installation_hashes.json
+
+# Batch files (except essential ones)
+*.bat
+!run_cli.bat
+!run_gui.bat
+
+# Temporary installer files
+temp_installer/
+installer_temp/
+
+# Plugin directories
+plugins/
+extensions/
+
+# Documentation builds
+docs/build/
+docs/_build/
+
+# But include example configuration files
+!example_config.json
+!sample_config.yaml
+!config.example.ini
+!INSTALLER_README.md
+!PORTABLE_README.txt
+!INSTALLER_COMPLETE.md

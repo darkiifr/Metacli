@@ -25,7 +25,7 @@ setup(
     description="A powerful command-line interface for extracting, processing, and managing file metadata",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/metacli/metacli",
+    url="https://github.com/darkiifr/Metacli",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -81,8 +81,8 @@ setup(
         "file-management",
     ],
     project_urls={
-        "Bug Reports": "https://github.com/metacli/metacli/issues",
-        "Source": "https://github.com/metacli/metacli",
+        "Bug Reports": "https://github.com/darkiifr/Metacli/issues",
+        "Source": "https://github.com/darkiifr/Metacli",
         "Documentation": "https://metacli.readthedocs.io/",
     },
 )

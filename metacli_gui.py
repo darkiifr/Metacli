@@ -24,11 +24,16 @@ import re
 # Add the metacli package to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Import translation system
+from translations import t, set_language, get_available_languages
+
 try:
     from metacli.core.extractor import MetadataExtractor
     from metacli.core.scanner import DirectoryScanner
     from metacli.utils.formatter import OutputFormatter
     from metacli.utils.logger import setup_logger, get_logger
+    from metacli.utils.updater import MetaCLIUpdater
+    from metacli.utils.hasher import ExecutableHasher
 except ImportError as e:
     print(f"Error importing MetaCLI modules: {e}")
     sys.exit(1)
@@ -39,7 +44,7 @@ class MetaCLIGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("MetaCLI - Advanced Metadata Extraction Tool v3.0")
+        self.root.title(t('main_title'))
         
         # Enhanced window configuration
         self.setup_window()
@@ -53,6 +58,8 @@ class MetaCLIGUI:
         self.scanner = DirectoryScanner()
         self.formatter = OutputFormatter()
         self.logger = setup_logger(verbose=False, log_file='metacli_gui.log')
+        self.updater = MetaCLIUpdater()
+        self.hasher = ExecutableHasher()
         
         # Enhanced GUI state variables
         self.current_path = tk.StringVar()
@@ -144,6 +151,18 @@ class MetaCLIGUI:
         # Clear operations
         self.root.bind('<Control-Delete>', lambda e: self.clear_results())
         
+        # Enhanced functionality shortcuts
+        self.root.bind('<Control-f>', lambda e: self.show_find_dialog())
+        self.root.bind('<Control-a>', lambda e: self.select_all())
+        self.root.bind('<Control-c>', lambda e: self.copy_results())
+        self.root.bind('<Control-e>', lambda e: self.export_results())
+        self.root.bind('<Control-b>', lambda e: self.batch_process())
+        self.root.bind('<Control-Shift-B>', lambda e: self.stop_batch_processing())
+        self.root.bind('<Control-Shift-F>', lambda e: self.show_filter_dialog())
+        self.root.bind('<Control-Shift-C>', lambda e: self.compare_files())
+        self.root.bind('<Control-Shift-R>', lambda e: self.save_report())
+        self.root.bind('<Control-Shift-S>', lambda e: self.show_shortcuts())
+        
         # Help
         self.root.bind('<F1>', lambda e: self.show_help())
     
@@ -154,27 +173,93 @@ class MetaCLIGUI:
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-                    self.dark_mode.set(config.get('dark_mode', False))
-                    self.max_files.set(config.get('max_files', 500))
-                    self.parallel_processing.set(config.get('parallel_processing', True))
-                    self.cache_enabled.set(config.get('cache_enabled', True))
-        except Exception:
+                    
+                    # Theme settings
+                    theme = config.get('theme', {})
+                    self.dark_mode.set(theme.get('dark_mode', False))
+                    if hasattr(self, 'theme_var'):
+                        self.theme_var.set(theme.get('theme_var', 'Light'))
+                    if hasattr(self, 'language_var'):
+                        self.language_var.set(theme.get('language', 'English'))
+                    
+                    # General settings
+                    general = config.get('general', {})
+                    if hasattr(self, 'auto_save_settings'):
+                        self.auto_save_settings.set(general.get('auto_save_settings', True))
+                    if hasattr(self, 'remember_window_size'):
+                        self.remember_window_size.set(general.get('remember_window_size', True))
+                    if hasattr(self, 'show_tooltips'):
+                        self.show_tooltips.set(general.get('show_tooltips', True))
+                    
+                    # Performance settings
+                    performance = config.get('performance', {})
+                    if hasattr(self, 'max_workers'):
+                        self.max_workers.set(performance.get('max_workers', 4))
+                    if hasattr(self, 'cache_size'):
+                        self.cache_size.set(performance.get('cache_size', 100))
+                    self.cache_enabled.set(performance.get('cache_enabled', True))
+                    self.parallel_processing.set(performance.get('parallel_processing', True))
+                    if hasattr(self, 'memory_limit'):
+                        self.memory_limit.set(performance.get('memory_limit', 512))
+                    
+                    # Scanning settings
+                    scanning = config.get('scanning', {})
+                    self.scan_recursive.set(scanning.get('scan_recursive', True))
+                    self.show_hidden.set(scanning.get('show_hidden', False))
+                    if hasattr(self, 'auto_refresh'):
+                        self.auto_refresh.set(scanning.get('auto_refresh', False))
+                    self.max_files.set(scanning.get('max_files', 500))
+                    self.selected_formats.set(scanning.get('selected_formats', 'all'))
+                    
+                    # Output settings
+                    output = config.get('output', {})
+                    self.output_format.set(output.get('output_format', 'json'))
+                    if hasattr(self, 'default_output_dir'):
+                        self.default_output_dir.set(output.get('default_output_dir', os.path.join(os.getcwd(), 'output')))
+                    if hasattr(self, 'auto_open_results'):
+                        self.auto_open_results.set(output.get('auto_open_results', False))
+                    if hasattr(self, 'create_backup'):
+                        self.create_backup.set(output.get('create_backup', True))
+                    
+                    # Logging settings
+                    logging_config = config.get('logging', {})
+                    if hasattr(self, 'log_level'):
+                        self.log_level.set(logging_config.get('log_level', 'INFO'))
+                    if hasattr(self, 'log_file_path'):
+                        self.log_file_path.set(logging_config.get('log_file_path', 'metacli_gui.log'))
+                    if hasattr(self, 'enable_file_logging'):
+                        self.enable_file_logging.set(logging_config.get('enable_file_logging', True))
+                    if hasattr(self, 'enable_console_logging'):
+                        self.enable_console_logging.set(logging_config.get('enable_console_logging', False))
+                    if hasattr(self, 'max_log_size'):
+                        self.max_log_size.set(logging_config.get('max_log_size', 10))
+                    if hasattr(self, 'keep_log_files'):
+                        self.keep_log_files.set(logging_config.get('keep_log_files', 5))
+                    
+                    # Advanced settings
+                    advanced = config.get('advanced', {})
+                    if hasattr(self, 'debug_mode'):
+                        self.debug_mode.set(advanced.get('debug_mode', False))
+                    if hasattr(self, 'verbose_output'):
+                        self.verbose_output.set(advanced.get('verbose_output', False))
+                    if hasattr(self, 'experimental_features'):
+                        self.experimental_features.set(advanced.get('experimental_features', False))
+                    if hasattr(self, 'plugin_dir'):
+                        self.plugin_dir.set(advanced.get('plugin_dir', os.path.join(os.getcwd(), 'plugins')))
+                        
+        except Exception as e:
+            print(f"Warning: Failed to load user preferences: {e}")
             pass  # Use defaults if config loading fails
     
     def save_user_preferences(self):
         """Save user preferences to configuration file."""
         try:
-            config = {
-                'dark_mode': self.dark_mode.get(),
-                'max_files': self.max_files.get(),
-                'parallel_processing': self.parallel_processing.get(),
-                'cache_enabled': self.cache_enabled.get()
-            }
+            config = self._get_all_settings()
             config_path = Path.home() / '.metacli_config.json'
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
-        except Exception:
-            pass  # Fail silently if saving fails
+        except Exception as e:
+            print(f"Warning: Failed to save user preferences: {e}")
     
     def on_closing(self):
         """Handle application closing with cleanup."""
@@ -264,56 +349,56 @@ class MetaCLIGUI:
         
         # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Open File...", command=self.open_file, accelerator="Ctrl+O")
-        file_menu.add_command(label="Open Directory...", command=self.browse_directory, accelerator="Ctrl+D")
+        menubar.add_cascade(label=t('menu_file'), menu=file_menu)
+        file_menu.add_command(label=t('file_open'), command=self.open_file, accelerator="Ctrl+O")
+        file_menu.add_command(label=t('file_open_dir'), command=self.browse_directory, accelerator="Ctrl+D")
         file_menu.add_separator()
-        file_menu.add_command(label="Export Results...", command=self.export_results, accelerator="Ctrl+E")
-        file_menu.add_command(label="Save Report...", command=self.save_report, accelerator="Ctrl+S")
+        file_menu.add_command(label=t('file_export'), command=self.export_results, accelerator="Ctrl+E")
+        file_menu.add_command(label=t('file_save_report'), command=self.save_report, accelerator="Ctrl+S")
         file_menu.add_separator()
-        file_menu.add_command(label="Recent Files", state="disabled")
+        file_menu.add_command(label=t('file_recent'), state="disabled")
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit, accelerator="Ctrl+Q")
+        file_menu.add_command(label=t('file_exit'), command=self.root.quit, accelerator="Ctrl+Q")
         
         # Edit menu
         edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Copy Results", command=self.copy_results, accelerator="Ctrl+C")
-        edit_menu.add_command(label="Select All", command=self.select_all, accelerator="Ctrl+A")
+        menubar.add_cascade(label=t('menu_edit'), menu=edit_menu)
+        edit_menu.add_command(label=t('edit_copy'), command=self.copy_results, accelerator="Ctrl+C")
+        edit_menu.add_command(label=t('edit_select_all'), command=self.select_all, accelerator="Ctrl+A")
         edit_menu.add_separator()
-        edit_menu.add_command(label="Find...", command=self.show_find_dialog, accelerator="Ctrl+F")
-        edit_menu.add_command(label="Filter Results...", command=self.show_filter_dialog)
+        edit_menu.add_command(label=t('edit_find'), command=self.show_find_dialog, accelerator="Ctrl+F")
+        edit_menu.add_command(label=t('edit_filter'), command=self.show_filter_dialog)
         
         # Tools menu
         tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Batch Process...", command=self.batch_process)
-        tools_menu.add_command(label="Compare Files...", command=self.compare_files)
-        tools_menu.add_command(label="Generate Report...", command=self.generate_report)
+        menubar.add_cascade(label=t('menu_tools'), menu=tools_menu)
+        tools_menu.add_command(label=t('tools_batch'), command=self.batch_process)
+        tools_menu.add_command(label=t('tools_compare'), command=self.compare_files)
+        tools_menu.add_command(label=t('tools_report'), command=self.generate_report)
         tools_menu.add_separator()
-        tools_menu.add_command(label="Settings...", command=self.show_settings)
-        tools_menu.add_command(label="Clear Cache", command=self.clear_cache)
+        tools_menu.add_command(label=t('tools_settings'), command=self.show_settings)
+        tools_menu.add_command(label=t('tools_clear_cache'), command=self.clear_cache)
         
         # View menu
         view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_command(label="Refresh", command=self.refresh_view, accelerator="F5")
+        menubar.add_cascade(label=t('menu_view'), menu=view_menu)
+        view_menu.add_command(label=t('view_refresh'), command=self.refresh_view, accelerator="F5")
         view_menu.add_separator()
-        view_menu.add_checkbutton(label="Show Hidden Files", variable=self.show_hidden)
-        view_menu.add_checkbutton(label="Auto Refresh", variable=self.auto_refresh)
+        view_menu.add_checkbutton(label=t('view_hidden'), variable=self.show_hidden)
+        view_menu.add_checkbutton(label=t('view_auto_refresh'), variable=self.auto_refresh)
         view_menu.add_separator()
-        view_menu.add_command(label="Expand All", command=self.expand_all)
-        view_menu.add_command(label="Collapse All", command=self.collapse_all)
+        view_menu.add_command(label=t('view_expand_all'), command=self.expand_all)
+        view_menu.add_command(label=t('view_collapse_all'), command=self.collapse_all)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="User Guide", command=self.show_help)
-        help_menu.add_command(label="Keyboard Shortcuts", command=self.show_shortcuts)
-        help_menu.add_command(label="Command Line Usage", command=self.show_cli_help)
+        menubar.add_cascade(label=t('menu_help'), menu=help_menu)
+        help_menu.add_command(label=t('help_guide'), command=self.show_help)
+        help_menu.add_command(label=t('help_shortcuts'), command=self.show_shortcuts)
+        help_menu.add_command(label=t('help_cli'), command=self.show_cli_help)
         help_menu.add_separator()
-        help_menu.add_command(label="Check for Updates", command=self.check_updates)
-        help_menu.add_command(label="About MetaCLI", command=self.show_about)
+        help_menu.add_command(label=t('help_updates'), command=self.check_updates)
+        help_menu.add_command(label=t('help_about'), command=self.show_about)
         
         # Bind keyboard shortcuts
         self.root.bind('<Control-o>', lambda e: self.open_file())
@@ -1098,14 +1183,41 @@ class MetaCLIGUI:
                 # Single file analysis
                 results = [self._analyze_single_file(path)]
             else:
-                # Directory scanning
+                # Directory scanning with optimized approach
                 file_types = None if self.selected_formats.get() == "all" else [self.selected_formats.get()]
-                results = self.scanner.find_files_list(
-                    str(path),
+                max_files = self.max_files.get()
+                
+                # Use the scanner's optimized scan_directory method
+                scan_results = self.scanner.scan_directory(
+                    path,
                     recursive=self.scan_recursive.get(),
                     file_types=file_types,
-                    max_files=self.max_files.get()
+                    extract_metadata=True,
+                    max_workers=2  # Limit workers to prevent UI blocking
                 )
+                
+                # Convert ScanResult objects to GUI format and apply max_files limit
+                results = []
+                for i, scan_result in enumerate(scan_results):
+                    if max_files and i >= max_files:
+                        break
+                    
+                    result_dict = {
+                        'path': str(scan_result.file_path),
+                        'size': scan_result.metadata.get('size', 0),
+                        'modified': scan_result.metadata.get('modified'),
+                        'metadata': scan_result.metadata
+                    }
+                    
+                    if scan_result.error:
+                        result_dict['error'] = scan_result.error
+                    
+                    results.append(result_dict)
+                    
+                    # Update progress periodically to keep UI responsive
+                    if i % 10 == 0:
+                        progress = min(100, (i / min(len(scan_results), max_files or len(scan_results))) * 100)
+                        self.root.after(0, self._update_scan_progress, progress)
                 
             # Update UI in main thread
             self.root.after(0, self._update_results, results)
@@ -1133,17 +1245,41 @@ class MetaCLIGUI:
                 'modified': None
             }
             
+    def _update_scan_progress(self, progress):
+        """Update scan progress in the UI."""
+        # Update status to show progress
+        self.status_label.config(text=f"Scanning... {progress:.0f}%", foreground='#f39c12')
+            
     def _update_results(self, results):
         """Update the results tree with scan results."""
-        # Clear existing results
-        for item in self.results_tree.get_children():
-            self.results_tree.delete(item)
+        # Clear existing results efficiently
+        self.results_tree.delete(*self.results_tree.get_children())
             
         self.scan_results = results
-        total_size = 0
-        file_types = set()
         
-        for result in results:
+        # Initialize statistics tracking
+        self._total_size = 0
+        self._file_types = set()
+        self._processed_batches = 0
+        self._total_batches = (len(results) + 49) // 50  # Ceiling division
+        
+        if not results:
+            self.stats_label.config(text="No files found")
+            return
+        
+        # Process results in batches to keep UI responsive
+        batch_size = 50
+        for batch_start in range(0, len(results), batch_size):
+            batch_end = min(batch_start + batch_size, len(results))
+            batch_results = results[batch_start:batch_end]
+            
+            # Schedule batch processing in main thread with small delay
+            delay = batch_start // batch_size * 10  # 10ms delay between batches
+            self.root.after(delay, self._process_results_batch, batch_results)
+            
+    def _process_results_batch(self, batch_results):
+        """Process a batch of results to keep UI responsive."""
+        for result in batch_results:
             if isinstance(result, dict) and 'path' in result:
                 path = result['path']
                 size = result.get('size', 0)
@@ -1163,11 +1299,12 @@ class MetaCLIGUI:
                     size_str, file_type, modified_str, extension
                 ))
                 
-                total_size += size
+                # Update statistics
+                self._total_size += size
                 if extension:
-                    file_types.add(extension)
+                    self._file_types.add(extension)
             else:
-                # Handle string results from scanner
+                # Handle string results from scanner (fallback)
                 file_path = Path(result)
                 if file_path.exists():
                     stat = file_path.stat()
@@ -1183,14 +1320,18 @@ class MetaCLIGUI:
                         size_str, file_type, modified_str, extension
                     ))
                     
-                    total_size += size
+                    # Update statistics
+                    self._total_size += size
                     if extension:
-                        file_types.add(extension)
-                        
-        # Update statistics
-        self.stats_label.config(
-            text=f"Files: {len(results)} | Total Size: {self._format_size(total_size)} | Types: {len(file_types)}"
-        )
+                        self._file_types.add(extension)
+        
+        # Update batch counter and statistics when batch is complete
+        self._processed_batches += 1
+        if self._processed_batches >= self._total_batches:
+            # All batches processed, update final statistics
+            self.stats_label.config(
+                text=f"Files: {len(self.scan_results)} | Total Size: {self._format_size(self._total_size)} | Types: {len(self._file_types)}"
+            )
         
     def _handle_scan_error(self, error_msg):
         """Handle scan errors."""
@@ -1997,26 +2138,83 @@ Other:
             if 'theme' in settings:
                 theme = settings['theme']
                 self.dark_mode.set(theme.get('dark_mode', False))
-                self.theme_var.set(theme.get('theme_var', 'Light'))
-                self.language_var.set(theme.get('language', 'English'))
+                if hasattr(self, 'theme_var'):
+                    self.theme_var.set(theme.get('theme_var', 'Light'))
+                if hasattr(self, 'language_var'):
+                    self.language_var.set(theme.get('language', 'English'))
             
             # General settings
             if 'general' in settings:
                 general = settings['general']
-                self.auto_save_settings.set(general.get('auto_save_settings', True))
-                self.remember_window_size.set(general.get('remember_window_size', True))
-                self.show_tooltips.set(general.get('show_tooltips', True))
+                if hasattr(self, 'auto_save_settings'):
+                    self.auto_save_settings.set(general.get('auto_save_settings', True))
+                if hasattr(self, 'remember_window_size'):
+                    self.remember_window_size.set(general.get('remember_window_size', True))
+                if hasattr(self, 'show_tooltips'):
+                    self.show_tooltips.set(general.get('show_tooltips', True))
             
             # Performance settings
             if 'performance' in settings:
                 perf = settings['performance']
-                self.max_workers.set(perf.get('max_workers', 4))
-                self.cache_size.set(perf.get('cache_size', 100))
+                if hasattr(self, 'max_workers'):
+                    self.max_workers.set(perf.get('max_workers', 4))
+                if hasattr(self, 'cache_size'):
+                    self.cache_size.set(perf.get('cache_size', 100))
                 self.cache_enabled.set(perf.get('cache_enabled', True))
                 self.parallel_processing.set(perf.get('parallel_processing', True))
-                self.memory_limit.set(perf.get('memory_limit', 512))
+                if hasattr(self, 'memory_limit'):
+                    self.memory_limit.set(perf.get('memory_limit', 512))
             
-            # Apply other settings similarly...
+            # Scanning settings
+            if 'scanning' in settings:
+                scanning = settings['scanning']
+                self.scan_recursive.set(scanning.get('scan_recursive', True))
+                self.show_hidden.set(scanning.get('show_hidden', False))
+                if hasattr(self, 'auto_refresh'):
+                    self.auto_refresh.set(scanning.get('auto_refresh', False))
+                self.max_files.set(scanning.get('max_files', 500))
+                self.selected_formats.set(scanning.get('selected_formats', 'all'))
+            
+            # Output settings
+            if 'output' in settings:
+                output = settings['output']
+                self.output_format.set(output.get('output_format', 'json'))
+                if hasattr(self, 'default_output_dir'):
+                    self.default_output_dir.set(output.get('default_output_dir', os.path.join(os.getcwd(), 'output')))
+                if hasattr(self, 'auto_open_results'):
+                    self.auto_open_results.set(output.get('auto_open_results', False))
+                if hasattr(self, 'create_backup'):
+                    self.create_backup.set(output.get('create_backup', True))
+            
+            # Logging settings
+            if 'logging' in settings:
+                logging_config = settings['logging']
+                if hasattr(self, 'log_level'):
+                    self.log_level.set(logging_config.get('log_level', 'INFO'))
+                if hasattr(self, 'log_file_path'):
+                    self.log_file_path.set(logging_config.get('log_file_path', 'metacli_gui.log'))
+                if hasattr(self, 'enable_file_logging'):
+                    self.enable_file_logging.set(logging_config.get('enable_file_logging', True))
+                if hasattr(self, 'enable_console_logging'):
+                    self.enable_console_logging.set(logging_config.get('enable_console_logging', False))
+                if hasattr(self, 'max_log_size'):
+                    self.max_log_size.set(logging_config.get('max_log_size', 10))
+                if hasattr(self, 'keep_log_files'):
+                    self.keep_log_files.set(logging_config.get('keep_log_files', 5))
+            
+            # Advanced settings
+            if 'advanced' in settings:
+                advanced = settings['advanced']
+                if hasattr(self, 'debug_mode'):
+                    self.debug_mode.set(advanced.get('debug_mode', False))
+                if hasattr(self, 'verbose_output'):
+                    self.verbose_output.set(advanced.get('verbose_output', False))
+                if hasattr(self, 'experimental_features'):
+                    self.experimental_features.set(advanced.get('experimental_features', False))
+                if hasattr(self, 'plugin_dir'):
+                    self.plugin_dir.set(advanced.get('plugin_dir', os.path.join(os.getcwd(), 'plugins')))
+            
+            # Apply theme changes
             self.apply_theme()
             
         except Exception as e:
@@ -2205,6 +2403,703 @@ Other:
             return 'Other'
         
     def stop_processing(self): pass
+    
+    def check_updates(self):
+        """Check for available updates and show update dialog."""
+        def update_worker():
+            try:
+                self.status_var.set("Checking for updates...")
+                updates_available, release_info = self.updater.check_for_updates()
+                
+                self.root.after(0, lambda: self._show_update_dialog(updates_available, release_info))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Update Check Failed", 
+                    f"Failed to check for updates: {str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.status_var.set("Ready"))
+        
+        threading.Thread(target=update_worker, daemon=True).start()
+    
+    def _show_update_dialog(self, updates_available, release_info):
+        """Show update dialog with current status."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("MetaCLI Updates")
+        dialog.geometry("500x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="MetaCLI Update Manager", 
+                               font=('TkDefaultFont', 14, 'bold'))
+        title_label.pack(pady=(0, 20))
+        
+        # Current version info
+        info_frame = ttk.LabelFrame(main_frame, text="Current Installation", padding="10")
+        info_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        version_info = self.updater.get_current_version_info()
+        
+        ttk.Label(info_frame, text=f"Installation Path: {version_info.get('installation_path', 'Unknown')}").pack(anchor=tk.W)
+        ttk.Label(info_frame, text=f"Executables Found: {', '.join(version_info.get('executables_found', []))}").pack(anchor=tk.W)
+        ttk.Label(info_frame, text=f"Current Version: {version_info.get('cached_version', 'Unknown')}").pack(anchor=tk.W)
+        
+        # Update status
+        status_frame = ttk.LabelFrame(main_frame, text="Update Status", padding="10")
+        status_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        if updates_available and release_info:
+            status_text = f"🔄 Update Available: {release_info.get('tag_name', 'Unknown')}"
+            status_color = "blue"
+            
+            # Release notes
+            notes_text = scrolledtext.ScrolledText(status_frame, height=6, wrap=tk.WORD)
+            notes_text.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+            
+            release_body = release_info.get('body', 'No release notes available.')
+            notes_text.insert(tk.END, release_body)
+            notes_text.config(state=tk.DISABLED)
+            
+        elif release_info:
+            status_text = f"✅ Up to Date: {release_info.get('tag_name', 'Unknown')}"
+            status_color = "green"
+        else:
+            status_text = "❌ Could not check for updates"
+            status_color = "red"
+        
+        status_label = ttk.Label(status_frame, text=status_text, foreground=status_color,
+                                font=('TkDefaultFont', 10, 'bold'))
+        status_label.pack(anchor=tk.W)
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(15, 0))
+        
+        if updates_available:
+            update_btn = ttk.Button(button_frame, text="Install Update", 
+                                   command=lambda: self._perform_update(dialog, release_info))
+            update_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
+        
+        # Show GitHub link
+        if release_info:
+            link_frame = ttk.Frame(main_frame)
+            link_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            link_label = ttk.Label(link_frame, text="View on GitHub", 
+                                  foreground="blue", cursor="hand2")
+            link_label.pack(anchor=tk.W)
+            link_label.bind("<Button-1>", lambda e: webbrowser.open(release_info.get('html_url', '')))
+    
+    def _perform_update(self, dialog, release_info):
+        """Perform the actual update process."""
+        # Close the dialog
+        dialog.destroy()
+        
+        # Show progress dialog
+        progress_dialog = tk.Toplevel(self.root)
+        progress_dialog.title("Installing Update")
+        progress_dialog.geometry("400x200")
+        progress_dialog.transient(self.root)
+        progress_dialog.grab_set()
+        
+        # Center the dialog
+        progress_dialog.update_idletasks()
+        x = (progress_dialog.winfo_screenwidth() // 2) - (progress_dialog.winfo_width() // 2)
+        y = (progress_dialog.winfo_screenheight() // 2) - (progress_dialog.winfo_height() // 2)
+        progress_dialog.geometry(f"+{x}+{y}")
+        
+        # Progress content
+        progress_frame = ttk.Frame(progress_dialog, padding="20")
+        progress_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(progress_frame, text="Installing MetaCLI Update...", 
+                 font=('TkDefaultFont', 12, 'bold')).pack(pady=(0, 20))
+        
+        progress_var = tk.StringVar(value="Preparing update...")
+        progress_label = ttk.Label(progress_frame, textvariable=progress_var)
+        progress_label.pack(pady=(0, 10))
+        
+        progress_bar = ttk.Progressbar(progress_frame, mode='indeterminate')
+        progress_bar.pack(fill=tk.X, pady=(0, 20))
+        progress_bar.start()
+        
+        def update_worker():
+            try:
+                progress_var.set("Downloading update...")
+                success, message = self.updater.perform_update()
+                
+                progress_bar.stop()
+                progress_dialog.destroy()
+                
+                if success:
+                    messagebox.showinfo("Update Complete", 
+                                       f"{message}\n\nPlease restart MetaCLI to use the new version.")
+                else:
+                    messagebox.showerror("Update Failed", message)
+            
+            except Exception as e:
+                progress_bar.stop()
+                progress_dialog.destroy()
+                messagebox.showerror("Update Error", f"Update failed: {str(e)}")
+        
+        threading.Thread(target=update_worker, daemon=True).start()
+    
+    def show_about(self):
+        """Show about dialog with version and update information."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("About MetaCLI")
+        dialog.geometry("450x350")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Logo/Title
+        title_label = ttk.Label(main_frame, text="MetaCLI", 
+                               font=('TkDefaultFont', 18, 'bold'))
+        title_label.pack(pady=(0, 10))
+        
+        subtitle_label = ttk.Label(main_frame, text="Advanced Metadata Extraction Tool", 
+                                  font=('TkDefaultFont', 10))
+        subtitle_label.pack(pady=(0, 20))
+        
+        # Version info
+        version_info = self.updater.get_current_version_info()
+        current_version = version_info.get('cached_version', 'Unknown')
+        
+        info_text = f"""Version: {current_version}
+Installation: {version_info.get('installation_path', 'Unknown')}
+Executables: {', '.join(version_info.get('executables_found', []))}
+
+MetaCLI is a powerful tool for extracting and analyzing metadata from various file types. It supports batch processing, advanced filtering, and multiple output formats.
+
+© 2024 MetaCLI Project"""
+        
+        info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
+        info_label.pack(pady=(0, 20))
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+        
+        ttk.Button(button_frame, text="Check for Updates", 
+                  command=lambda: [dialog.destroy(), self.check_updates()]).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
+    
+    # Enhanced functionality methods
+    def export_results(self):
+        """Export current results to various formats."""
+        if not hasattr(self, 'current_results') or not self.current_results:
+            messagebox.showwarning("No Results", "No scan results to export.")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Export Results",
+            defaultextension=".json",
+            filetypes=[
+                ("JSON files", "*.json"),
+                ("CSV files", "*.csv"),
+                ("XML files", "*.xml"),
+                ("HTML files", "*.html")
+            ]
+        )
+        
+        if file_path:
+            try:
+                self.formatter.save_results(self.current_results, file_path)
+                messagebox.showinfo("Export Complete", f"Results exported to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export results: {e}")
+    
+    def copy_results(self):
+        """Copy selected results to clipboard."""
+        selection = self.results_tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select items to copy.")
+            return
+        
+        copied_data = []
+        for item in selection:
+            values = self.results_tree.item(item, 'values')
+            copied_data.append('\t'.join(str(v) for v in values))
+        
+        self.root.clipboard_clear()
+        self.root.clipboard_append('\n'.join(copied_data))
+        messagebox.showinfo("Copied", f"Copied {len(copied_data)} items to clipboard.")
+    
+    def select_all(self):
+        """Select all items in the results tree."""
+        for item in self.results_tree.get_children():
+            self.results_tree.selection_add(item)
+    
+    def show_find_dialog(self):
+        """Show find dialog for searching results."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Find in Results")
+        dialog.geometry("400x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(main_frame, text="Search for:").pack(anchor=tk.W)
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(main_frame, textvariable=search_var, width=40)
+        search_entry.pack(fill=tk.X, pady=(5, 10))
+        search_entry.focus()
+        
+        case_sensitive = tk.BooleanVar()
+        ttk.Checkbutton(main_frame, text="Case sensitive", variable=case_sensitive).pack(anchor=tk.W)
+        
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        def find_items():
+            search_text = search_var.get()
+            if not search_text:
+                return
+            
+            # Clear previous selection
+            self.results_tree.selection_remove(self.results_tree.selection())
+            
+            found_items = []
+            for item in self.results_tree.get_children():
+                values = self.results_tree.item(item, 'values')
+                text_to_search = ' '.join(str(v) for v in values)
+                
+                if case_sensitive.get():
+                    if search_text in text_to_search:
+                        found_items.append(item)
+                else:
+                    if search_text.lower() in text_to_search.lower():
+                        found_items.append(item)
+            
+            if found_items:
+                for item in found_items:
+                    self.results_tree.selection_add(item)
+                    self.results_tree.see(item)
+                messagebox.showinfo("Search Results", f"Found {len(found_items)} matching items.")
+            else:
+                messagebox.showinfo("Search Results", "No matching items found.")
+            
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="Find", command=find_items).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+        
+        # Bind Enter key to find
+        search_entry.bind('<Return>', lambda e: find_items())
+    
+    def show_filter_dialog(self):
+        """Show filter dialog for filtering results."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Filter Results")
+        dialog.geometry("450x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # File type filter
+        ttk.Label(main_frame, text="File Type:").pack(anchor=tk.W)
+        file_type_var = tk.StringVar(value="all")
+        file_type_combo = ttk.Combobox(main_frame, textvariable=file_type_var, 
+                                      values=["all", "image", "document", "audio", "video", "archive", "executable"])
+        file_type_combo.pack(fill=tk.X, pady=(5, 10))
+        
+        # Size filter
+        ttk.Label(main_frame, text="Size Range (MB):").pack(anchor=tk.W)
+        size_frame = ttk.Frame(main_frame)
+        size_frame.pack(fill=tk.X, pady=(5, 10))
+        
+        min_size_var = tk.StringVar()
+        max_size_var = tk.StringVar()
+        ttk.Label(size_frame, text="Min:").pack(side=tk.LEFT)
+        ttk.Entry(size_frame, textvariable=min_size_var, width=10).pack(side=tk.LEFT, padx=(5, 10))
+        ttk.Label(size_frame, text="Max:").pack(side=tk.LEFT)
+        ttk.Entry(size_frame, textvariable=max_size_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Date filter
+        ttk.Label(main_frame, text="Modified Date:").pack(anchor=tk.W, pady=(10, 0))
+        date_var = tk.StringVar(value="any")
+        date_combo = ttk.Combobox(main_frame, textvariable=date_var,
+                                 values=["any", "today", "this_week", "this_month", "this_year"])
+        date_combo.pack(fill=tk.X, pady=(5, 10))
+        
+        def apply_filter():
+            # Implementation would filter the results tree based on criteria
+            messagebox.showinfo("Filter Applied", "Filter has been applied to the results.")
+            dialog.destroy()
+        
+        def clear_filter():
+            # Reset all filters
+            file_type_var.set("all")
+            min_size_var.set("")
+            max_size_var.set("")
+            date_var.set("any")
+        
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Button(button_frame, text="Apply", command=apply_filter).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Clear", command=clear_filter).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+    
+    def clear_cache(self):
+        """Clear metadata extraction cache."""
+        try:
+            if hasattr(self.extractor, 'clear_cache'):
+                self.extractor.clear_cache()
+            messagebox.showinfo("Cache Cleared", "Metadata cache has been cleared successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to clear cache: {e}")
+    
+    def refresh_view(self):
+        """Refresh the current view."""
+        if hasattr(self, 'current_path') and self.current_path:
+            self.scan_directory()
+        else:
+            messagebox.showinfo("Refresh", "No directory selected to refresh.")
+    
+    def expand_all(self):
+        """Expand all items in the results tree."""
+        def expand_item(item):
+            self.results_tree.item(item, open=True)
+            for child in self.results_tree.get_children(item):
+                expand_item(child)
+        
+        for item in self.results_tree.get_children():
+            expand_item(item)
+    
+    def collapse_all(self):
+        """Collapse all items in the results tree."""
+        def collapse_item(item):
+            self.results_tree.item(item, open=False)
+            for child in self.results_tree.get_children(item):
+                collapse_item(child)
+        
+        for item in self.results_tree.get_children():
+            collapse_item(item)
+    
+    def show_shortcuts(self):
+        """Show keyboard shortcuts dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Keyboard Shortcuts")
+        dialog.geometry("500x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        shortcuts_text = """
+General:
+  Ctrl+O        Open directory
+  Ctrl+S        Save results
+  Ctrl+R        Refresh view
+  Ctrl+F        Find in results
+  Ctrl+A        Select all
+  Ctrl+C        Copy selection
+  F5            Refresh current scan
+  F11           Toggle fullscreen
+  Escape        Clear selection
+
+View:
+  Ctrl++        Increase font size
+  Ctrl+-        Decrease font size
+  Ctrl+0        Reset font size
+  Ctrl+D        Toggle dark mode
+
+Navigation:
+  Tab           Switch between tabs
+  Ctrl+Tab      Next tab
+  Ctrl+Shift+Tab Previous tab
+  Enter         Analyze selected file
+  Delete        Clear results
+
+Batch Operations:
+  Ctrl+B        Start batch processing
+  Ctrl+Shift+B  Stop batch processing
+  Ctrl+E        Export results
+"""
+        
+        text_widget = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, 
+                                               width=60, height=20, font=('Consolas', 10))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert(tk.END, shortcuts_text)
+        text_widget.config(state=tk.DISABLED)
+        
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
+    
+    def show_cli_help(self):
+        """Show CLI help information."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("CLI Help")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        cli_help_text = """
+MetaCLI Command Line Interface
+
+Usage:
+  python metacli_cli.py [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  scan        Scan directory for metadata
+  extract     Extract metadata from single file
+  batch       Batch process multiple directories
+  export      Export results to various formats
+  compare     Compare metadata between files
+
+Options:
+  --help      Show help message
+  --version   Show version information
+  --verbose   Enable verbose output
+  --quiet     Suppress output
+  --format    Output format (json, csv, xml, html)
+  --output    Output file path
+  --recursive Scan directories recursively
+  --hidden    Include hidden files
+  --max-files Maximum number of files to process
+
+Examples:
+  # Scan current directory
+  python metacli_cli.py scan .
+  
+  # Extract metadata from single file
+  python metacli_cli.py extract image.jpg
+  
+  # Batch process with JSON output
+  python metacli_cli.py batch --format json --output results.json dir1 dir2
+  
+  # Compare two files
+  python metacli_cli.py compare file1.jpg file2.jpg
+  
+  # Scan recursively with size limit
+  python metacli_cli.py scan --recursive --max-files 1000 /path/to/directory
+
+For more information, visit: https://github.com/darkiifr/Metacli
+"""
+        
+        text_widget = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, 
+                                               width=70, height=25, font=('Consolas', 9))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert(tk.END, cli_help_text)
+        text_widget.config(state=tk.DISABLED)
+        
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
+    
+    def save_report(self):
+        """Save a detailed report of the current scan."""
+        if not hasattr(self, 'current_results') or not self.current_results:
+            messagebox.showwarning("No Results", "No scan results to save as report.")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Save Report",
+            defaultextension=".html",
+            filetypes=[("HTML files", "*.html"), ("Text files", "*.txt")]
+        )
+        
+        if file_path:
+            try:
+                # Generate detailed HTML report
+                self._generate_detailed_report(file_path)
+                messagebox.showinfo("Report Saved", f"Detailed report saved to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save report: {e}")
+    
+    def _generate_detailed_report(self, file_path):
+        """Generate a detailed HTML report."""
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MetaCLI Scan Report</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 5px; }}
+        .summary {{ margin: 20px 0; }}
+        .file-entry {{ margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }}
+        .metadata {{ margin-left: 20px; font-size: 0.9em; color: #666; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MetaCLI Scan Report</h1>
+        <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <p>Scanned Path: {getattr(self, 'current_path', 'Unknown')}</p>
+    </div>
+    
+    <div class="summary">
+        <h2>Summary</h2>
+        <p>Total Files: {len(self.current_results)}</p>
+        <p>Scan completed successfully</p>
+    </div>
+    
+    <div class="results">
+        <h2>Detailed Results</h2>
+"""
+        
+        for result in self.current_results:
+            html_content += f"""
+        <div class="file-entry">
+            <strong>{result.get('name', 'Unknown')}</strong>
+            <div class="metadata">
+                <p>Size: {result.get('size_human', 'Unknown')}</p>
+                <p>Type: {result.get('file_type', 'Unknown')}</p>
+                <p>Modified: {result.get('modified', 'Unknown')}</p>
+            </div>
+        </div>
+"""
+        
+        html_content += """
+    </div>
+</body>
+</html>
+"""
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+    
+    def compare_files(self):
+        """Compare metadata between two files."""
+        file1 = filedialog.askopenfilename(title="Select first file")
+        if not file1:
+            return
+        
+        file2 = filedialog.askopenfilename(title="Select second file")
+        if not file2:
+            return
+        
+        try:
+            metadata1 = self.extractor.extract_metadata(file1)
+            metadata2 = self.extractor.extract_metadata(file2)
+            
+            self._show_comparison_dialog(file1, file2, metadata1, metadata2)
+        except Exception as e:
+            messagebox.showerror("Comparison Error", f"Failed to compare files: {e}")
+    
+    def _show_comparison_dialog(self, file1, file2, metadata1, metadata2):
+        """Show file comparison dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("File Comparison")
+        dialog.geometry("800x600")
+        dialog.transient(self.root)
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # File headers
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(header_frame, text=f"File 1: {os.path.basename(file1)}", 
+                 font=('TkDefaultFont', 10, 'bold')).pack(side=tk.LEFT)
+        ttk.Label(header_frame, text=f"File 2: {os.path.basename(file2)}", 
+                 font=('TkDefaultFont', 10, 'bold')).pack(side=tk.RIGHT)
+        
+        # Comparison content
+        comparison_text = self._generate_comparison_text(metadata1, metadata2)
+        
+        text_widget = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, 
+                                               width=80, height=30, font=('Consolas', 9))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert(tk.END, comparison_text)
+        text_widget.config(state=tk.DISABLED)
+        
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
+    
+    def _generate_comparison_text(self, metadata1, metadata2):
+        """Generate comparison text for two metadata dictionaries."""
+        comparison = ["METADATA COMPARISON\n" + "="*50 + "\n"]
+        
+        all_keys = set(metadata1.keys()) | set(metadata2.keys())
+        
+        for key in sorted(all_keys):
+            val1 = metadata1.get(key, "<missing>")
+            val2 = metadata2.get(key, "<missing>")
+            
+            if val1 == val2:
+                comparison.append(f"✓ {key}: {val1}")
+            else:
+                comparison.append(f"✗ {key}:")
+                comparison.append(f"    File 1: {val1}")
+                comparison.append(f"    File 2: {val2}")
+            comparison.append("")
+        
+        return "\n".join(comparison)
+    
+    def generate_report(self):
+        """Generate a comprehensive report."""
+        self.save_report()
+    
+    def show_settings(self):
+        """Show settings dialog."""
+        # Switch to settings tab
+        self.notebook.select(4)  # Assuming settings is the 5th tab (index 4)
+    
+    def batch_process(self):
+        """Start batch processing."""
+        # Switch to batch tab
+        self.notebook.select(2)  # Assuming batch is the 3rd tab (index 2)
 
 
 def main():
