@@ -448,6 +448,16 @@ class MetaCLIInstaller:
         if self.mode == 'install' and self.existing_installation:
             self._show_existing_installation_options()
             return
+        
+        # If repair/modify/uninstall mode but no existing installation, switch to install mode
+        if self.mode in ['repair', 'modify', 'uninstall'] and not self.existing_installation:
+            self.mode = 'install'
+            self.root.title("MetaCLI Setup")
+            messagebox.showwarning(
+                "No Installation Found",
+                f"MetaCLI is not currently installed on this computer.\n\n"
+                f"The installer will now switch to installation mode."
+            )
             
         # Title based on mode with icons
         mode_titles = {
@@ -1912,56 +1922,56 @@ def parse_arguments():
         return 'install'
 
 def handle_admin_privileges(mode):
-    """Handle administrator privilege requests based on mode"""
+    """Handle administrator privilege requests - always require admin privileges"""
     if mode == 'request_admin':
         # This should never be reached in normal operation
         print("Internal admin request flag detected - this should not happen.")
         return
     
-    # Check if admin privileges are needed for the current mode
-    needs_admin = mode in ['install', 'repair', 'uninstall'] and check_admin_needed()
-    
-    if needs_admin:
-        try:
-            import ctypes
-            if not ctypes.windll.shell32.IsUserAnAdmin():
-                mode_text = {
-                    'install': 'installation',
-                    'repair': 'repair',
-                    'uninstall': 'uninstallation'
-                }.get(mode, 'operation')
-                
-                print(f"MetaCLI requires administrator privileges for {mode_text}.")
-                print("Requesting elevated permissions...")
-                
-                # Create new argument list without --request-admin to avoid loops
-                new_args = [arg for arg in sys.argv if arg != '--request-admin']
-                args_string = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in new_args)
-                
-                try:
-                    # Request elevation and exit immediately
-                    result = ctypes.windll.shell32.ShellExecuteW(
-                        None, "runas", sys.executable, args_string, None, 1
-                    )
-                    if result > 32:  # Success
-                        print("Elevation request sent. Exiting current process...")
-                        sys.exit(0)
-                    else:
-                        raise Exception(f"ShellExecuteW failed with code {result}")
-                except Exception as shell_error:
-                    print(f"\nFailed to request administrator privileges: {shell_error}")
-                    print(f"Administrator privileges are required for MetaCLI {mode}.")
-                    print("Please run the installer as administrator manually.")
-                    input("Press Enter to exit...")
-                    sys.exit(1)
-        except ImportError:
-            print(f"\nCannot check administrator privileges on this system.")
-            print(f"Administrator privileges may be required for MetaCLI {mode}.")
-            print("If installation fails, please run as administrator.")
-        except Exception as e:
-            print(f"\nError checking administrator privileges: {e}")
-            print(f"Administrator privileges may be required for MetaCLI {mode}.")
-            print("If installation fails, please run as administrator.")
+    # Always require admin privileges for the installer
+    try:
+        import ctypes
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            mode_text = {
+                'install': 'installation',
+                'repair': 'repair',
+                'modify': 'modification',
+                'uninstall': 'uninstallation'
+            }.get(mode, 'operation')
+            
+            print(f"MetaCLI Installer requires administrator privileges for {mode_text}.")
+            print("Requesting elevated permissions...")
+            
+            # Create new argument list without --request-admin to avoid loops
+            new_args = [arg for arg in sys.argv if arg != '--request-admin']
+            args_string = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in new_args)
+            
+            try:
+                # Request elevation and exit immediately
+                result = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable, args_string, None, 1
+                )
+                if result > 32:  # Success
+                    print("Elevation request sent. Exiting current process...")
+                    sys.exit(0)
+                else:
+                    raise Exception(f"ShellExecuteW failed with code {result}")
+            except Exception as shell_error:
+                print(f"\nFailed to request administrator privileges: {shell_error}")
+                print(f"Administrator privileges are required for MetaCLI Installer.")
+                print("Please run the installer as administrator manually.")
+                input("Press Enter to exit...")
+                sys.exit(1)
+        else:
+            print("Administrator privileges confirmed.")
+    except ImportError:
+        print(f"\nCannot check administrator privileges on this system.")
+        print(f"Administrator privileges are required for MetaCLI Installer.")
+        print("Please ensure you are running as administrator.")
+    except Exception as e:
+        print(f"\nError checking administrator privileges: {e}")
+        print(f"Administrator privileges are required for MetaCLI Installer.")
+        print("Please ensure you are running as administrator.")
 
 def main():
     """Main entry point with comprehensive error handling"""

@@ -86,39 +86,108 @@ def main():
     print("\n=== Step 3: Building Installer Executable ===")
     print("Building MetaCLI Installer...")
     
-    # PyInstaller command
-    cmd = [
-        'pyinstaller',
-        '--onefile',                    # Create a single executable
-        '--windowed',                   # Hide console window
-        '--name=MetaCLI_Installer',     # Output executable name
-        '--distpath', str(dist_dir),    # Output directory
-        '--workpath', str(build_dir),   # Build directory
-        '--specpath', str(current_dir), # Spec file location
-        '--add-data', f'{current_dir / "installer"};installer',  # Include installer package
-    ]
+    # Create custom spec file with admin privileges
+    spec_content = f'''
+# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+# Determine data files to include
+datas = [
+    (r'{current_dir / "installer"}', 'installer'),
+]
+
+# Add dist directory if it exists
+import os
+if os.path.exists(r'{current_dir / "dist"}'):
+    datas.append((r'{current_dir / "dist"}', 'dist'))
     
-    # Add dist directory only if it exists
+# Add MetaCLI_Portable directory if it exists
+if os.path.exists(r'{current_dir / "MetaCLI_Portable"}'):
+    datas.append((r'{current_dir / "MetaCLI_Portable"}', 'MetaCLI_Portable'))
+
+a = Analysis(
+    [r'{installer_script}'],
+    pathex=[],
+    binaries=[],
+    datas=datas,
+    hiddenimports=[
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.messagebox',
+        'tkinter.filedialog',
+        'winreg',
+        'ctypes',
+        'subprocess',
+        'threading',
+        'pathlib',
+        'json',
+        'logging',
+        'tempfile',
+    ],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='MetaCLI_Installer',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon={f"r'{current_dir / 'icon.ico'}" if (current_dir / "icon.ico").exists() else "None"},
+     uac_admin=True,
+     uac_uiaccess=False,
+)
+'''
+    
+    # Write spec file
+    spec_file = current_dir / 'MetaCLI_Installer.spec'
+    with open(spec_file, 'w') as f:
+        f.write(spec_content)
+    
+    print("Created installer spec file with admin privileges")
+    
+    # Check what directories exist
     if (current_dir / "dist").exists():
-        cmd.extend(['--add-data', f'{current_dir / "dist"};dist'])
         print("Including dist directory with CLI/GUI executables")
     else:
         print("Warning: dist directory not found, installer will download executables at runtime")
     
-    # Add MetaCLI_Portable directory only if it exists
     if (current_dir / "MetaCLI_Portable").exists():
-        cmd.extend(['--add-data', f'{current_dir / "MetaCLI_Portable"};MetaCLI_Portable'])
         print("Including MetaCLI_Portable directory")
     else:
         print("Warning: MetaCLI_Portable directory not found")
     
-    cmd.append(str(installer_script))
-    
-    # Add icon if it exists
-    icon_path = current_dir / "icon.ico"
-    if icon_path.exists():
-        cmd.insert(-1, '--icon')
-        cmd.insert(-1, str(icon_path))
+    # PyInstaller command using spec file
+    cmd = [
+        'pyinstaller',
+        '--distpath', str(dist_dir),    # Output directory
+        '--workpath', str(build_dir),   # Build directory
+        str(spec_file)                  # Use our custom spec file
+    ]
     
     try:
         # Run PyInstaller

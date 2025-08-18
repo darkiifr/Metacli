@@ -120,6 +120,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+    uac_admin=True,
+    uac_uiaccess=False,
 )
 '''
     
@@ -196,6 +198,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+    uac_admin=True,
+    uac_uiaccess=False,
 )
 '''
     

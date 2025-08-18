@@ -7,7 +7,7 @@ with enhanced features, tabbed interface, and improved user experience.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import os
 import sys
 import json
@@ -20,6 +20,13 @@ import shutil
 import hashlib
 import csv
 import re
+import queue
+import time
+from typing import Optional, Callable, Any
+import weakref
+import gc
+import psutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add the metacli package to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,10 +46,104 @@ except ImportError as e:
     sys.exit(1)
 
 
+def check_admin_privileges():
+    """Check if the current process has administrator privileges on Windows."""
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except Exception:
+        return False
+
+
+def request_admin_elevation():
+    """Request administrator elevation for the current application."""
+    try:
+        import ctypes
+        import sys
+        
+        if check_admin_privileges():
+            return True
+            
+        # Show message to user about admin requirement
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            
+            root = tk.Tk()
+            root.withdraw()  # Hide the main window
+            
+            result = messagebox.askyesno(
+                "Administrator Privileges Required",
+                "MetaCLI GUI requires administrator privileges to function properly.\n\n"
+                "This is needed for:\n"
+                "• File system access and metadata extraction\n"
+                "• System integration features\n"
+                "• Proper application functionality\n\n"
+                "Would you like to restart the application as administrator?",
+                icon="warning"
+            )
+            
+            root.destroy()
+            
+            if not result:
+                return False
+                
+        except Exception:
+            print("MetaCLI GUI requires administrator privileges to run properly.")
+            print("Please restart the application as administrator.")
+            input("Press Enter to exit...")
+            return False
+        
+        # Request elevation
+        try:
+            args_string = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in sys.argv)
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, args_string, None, 1
+            )
+            
+            if result > 32:  # Success
+                sys.exit(0)  # Exit current process
+            else:
+                raise Exception(f"ShellExecuteW failed with code {result}")
+                
+        except Exception as e:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                
+                root = tk.Tk()
+                root.withdraw()
+                
+                messagebox.showerror(
+                    "Elevation Failed",
+                    f"Failed to request administrator privileges: {e}\n\n"
+                    "Please manually run the application as administrator."
+                )
+                
+                root.destroy()
+                
+            except Exception:
+                print(f"Failed to request administrator privileges: {e}")
+                print("Please manually run the application as administrator.")
+                input("Press Enter to exit...")
+            
+            return False
+            
+    except Exception as e:
+        print(f"Error checking administrator privileges: {e}")
+        return False
+
+
 class MetaCLIGUI:
     """Advanced GUI application class for MetaCLI with enhanced features."""
     
     def __init__(self, root):
+        # Check for admin privileges at startup
+        if not check_admin_privileges():
+            if not request_admin_elevation():
+                root.destroy()
+                sys.exit(1)
+                
         self.root = root
         self.root.title(t('main_title'))
         
@@ -55,7 +156,7 @@ class MetaCLIGUI:
         
         # Initialize components with optimized settings
         self.extractor = MetadataExtractor(enable_cache=True, max_workers=4)
-        self.scanner = DirectoryScanner()
+        self.scanner = DirectoryScanner(extractor=self.extractor)
         self.formatter = OutputFormatter()
         self.logger = setup_logger(verbose=False, log_file='metacli_gui.log')
         self.updater = MetaCLIUpdater()
@@ -79,6 +180,58 @@ class MetaCLIGUI:
         self.processing = False
         self.last_scan_time = 0
         self.total_files_processed = 0
+        
+        # Threading improvements
+        self._stop_event = threading.Event()
+        self._worker_threads = set()
+        self._thread_lock = threading.RLock()
+        self._result_queue = queue.Queue()
+        self._animation_after_ids = set()
+        
+        # Animation state
+        self._fade_animations = {}
+        self._slide_animations = {}
+        self._pulse_animations = {}
+        
+        # Enhanced error handling
+        self._error_queue = queue.Queue()
+        self._notification_queue = queue.Queue()
+        self._retry_attempts = {}
+        self._max_retry_attempts = 3
+        self._error_history = []
+        self._last_error_time = 0
+        
+        # Memory management
+        self._memory_threshold = 500 * 1024 * 1024  # 500MB threshold
+        self._batch_size = 100  # Process results in batches
+        self._gc_frequency = 50  # Force GC every 50 files
+        self._processed_count = 0
+        self._memory_warnings = 0
+        
+        # Batch processing variables
+        self.batch_directories = []
+        self.batch_processing = False
+        self.batch_stop_requested = False
+        self.batch_paused = False
+        self.batch_current_file = ""
+        self.batch_processed_files = 0
+        self.batch_total_files = 0
+        self.batch_start_time = None
+        self.batch_queue = queue.Queue()
+        self.batch_results_queue = queue.Queue()
+        self.batch_error_count = 0
+        self.batch_success_count = 0
+        
+        # Queue management variables
+        self.processing_queue = []
+        self.current_queue_index = 0
+        self.queue_processing = False
+        self.queue_paused = False
+        
+        # Template management variables
+        self.templates = {}
+        self.custom_templates = {}
+        self._load_default_templates()
         
         # Setup UI components
         self.setup_ui()
@@ -246,6 +399,13 @@ class MetaCLIGUI:
                         self.experimental_features.set(advanced.get('experimental_features', False))
                     if hasattr(self, 'plugin_dir'):
                         self.plugin_dir.set(advanced.get('plugin_dir', os.path.join(os.getcwd(), 'plugins')))
+                    
+                    # Update settings
+                    update_settings = config.get('update', {})
+                    if hasattr(self, 'auto_check_updates'):
+                        self.auto_check_updates.set(update_settings.get('auto_check_updates', True))
+                    if hasattr(self, 'notify_beta_updates'):
+                        self.notify_beta_updates.set(update_settings.get('notify_beta_updates', False))
                         
         except Exception as e:
             print(f"Warning: Failed to load user preferences: {e}")
@@ -263,8 +423,447 @@ class MetaCLIGUI:
     
     def on_closing(self):
         """Handle application closing with cleanup."""
+        self._cleanup_threads()
+        self._cleanup_animations()
         self.save_user_preferences()
         self.root.destroy()
+    
+    def _cleanup_threads(self):
+        """Clean up all worker threads safely"""
+        with self._thread_lock:
+            self._stop_event.set()
+            
+            # Wait for threads to finish with timeout
+            for thread_ref in list(self._worker_threads):
+                thread = thread_ref() if isinstance(thread_ref, weakref.ref) else thread_ref
+                if thread and thread.is_alive():
+                    thread.join(timeout=2.0)
+            
+            self._worker_threads.clear()
+            self._stop_event.clear()
+    
+    def _register_thread(self, thread):
+        """Register a worker thread for cleanup"""
+        with self._thread_lock:
+            # Use weak references to avoid circular references
+            self._worker_threads.add(weakref.ref(thread))
+    
+    def _cleanup_animations(self):
+        """Cancel all pending animations"""
+        for after_id in self._animation_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._animation_after_ids.clear()
+        
+        # Clear animation states
+        self._fade_animations.clear()
+        self._slide_animations.clear()
+        self._pulse_animations.clear()
+    
+    def _animate_fade(self, widget, start_alpha=0.0, end_alpha=1.0, duration=300, callback=None):
+        """Animate widget fade in/out effect"""
+        steps = 20
+        step_duration = duration // steps
+        alpha_step = (end_alpha - start_alpha) / steps
+        
+        def fade_step(current_step):
+            if current_step >= steps or widget not in self._fade_animations:
+                if callback:
+                    callback()
+                self._fade_animations.pop(widget, None)
+                return
+            
+            alpha = start_alpha + (alpha_step * current_step)
+            try:
+                # For tkinter widgets, we simulate fade by adjusting colors
+                if hasattr(widget, 'configure'):
+                    if alpha <= 0.1:
+                        widget.configure(state='disabled')
+                    else:
+                        widget.configure(state='normal')
+                
+                after_id = self.root.after(step_duration, lambda: fade_step(current_step + 1))
+                self._animation_after_ids.add(after_id)
+                
+            except tk.TclError:
+                self._fade_animations.pop(widget, None)
+        
+        self._fade_animations[widget] = True
+        fade_step(0)
+    
+    def _animate_pulse(self, widget, duration=1000, intensity=0.2):
+        """Animate widget pulse effect for attention"""
+        if widget in self._pulse_animations:
+            return
+        
+        # Check if widget supports background option safely
+        original_bg = None
+        try:
+            if hasattr(widget, 'cget'):
+                original_bg = widget.cget('background')
+        except tk.TclError:
+            # Widget doesn't support background option (e.g., ttk widgets)
+            original_bg = None
+        
+        steps = 30
+        step_duration = duration // steps
+        
+        def pulse_step(current_step):
+            if current_step >= steps or widget not in self._pulse_animations:
+                self._pulse_animations.pop(widget, None)
+                # Restore original state
+                try:
+                    if hasattr(widget, 'configure'):
+                        widget.configure(relief='flat')
+                except tk.TclError:
+                    pass
+                return
+            
+            # Calculate pulse intensity
+            progress = current_step / steps
+            pulse_value = abs(0.5 - (progress % 1.0)) * 2 * intensity
+            
+            try:
+                if hasattr(widget, 'configure'):
+                    # Use relief changes for pulse effect (works with both tk and ttk widgets)
+                    if pulse_value > 0.1:
+                        widget.configure(relief='raised')
+                    else:
+                        widget.configure(relief='flat')
+                
+                after_id = self.root.after(step_duration, lambda: pulse_step(current_step + 1))
+                self._animation_after_ids.add(after_id)
+                
+            except tk.TclError:
+                self._pulse_animations.pop(widget, None)
+        
+        self._pulse_animations[widget] = True
+        pulse_step(0)
+    
+    def _animate_progress_smooth(self, progress_bar, target_value, duration=500):
+        """Smoothly animate progress bar to target value"""
+        if not hasattr(progress_bar, 'get'):
+            return
+        
+        current_value = progress_bar.get()
+        steps = 20
+        step_duration = duration // steps
+        value_step = (target_value - current_value) / steps
+        
+        def progress_step(current_step):
+            if current_step >= steps:
+                progress_bar.configure(value=target_value)
+                return
+            
+            new_value = current_value + (value_step * current_step)
+            try:
+                progress_bar.configure(value=new_value)
+                after_id = self.root.after(step_duration, lambda: progress_step(current_step + 1))
+                self._animation_after_ids.add(after_id)
+            except tk.TclError:
+                pass
+        
+        progress_step(0)
+    
+    def _show_loading_animation(self, widget, text="Processing..."):
+        """Show loading animation with rotating text"""
+        loading_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        char_index = 0
+        
+        def update_loading():
+            nonlocal char_index
+            if widget not in self._pulse_animations:
+                return
+            
+            try:
+                current_char = loading_chars[char_index % len(loading_chars)]
+                if hasattr(widget, 'configure'):
+                    widget.configure(text=f"{current_char} {text}")
+                
+                char_index += 1
+                after_id = self.root.after(100, update_loading)
+                self._animation_after_ids.add(after_id)
+                
+            except tk.TclError:
+                self._pulse_animations.pop(widget, None)
+        
+        self._pulse_animations[widget] = True
+        update_loading()
+    
+    def _stop_loading_animation(self, widget, final_text=""):
+        """Stop loading animation and set final text"""
+        self._pulse_animations.pop(widget, None)
+        try:
+            if hasattr(widget, 'configure'):
+                widget.configure(text=final_text)
+        except tk.TclError:
+            pass
+    
+    def _show_error_notification(self, title, message, error_type="error", duration=5000, allow_retry=False, retry_callback=None):
+        """Show enhanced error notification with retry options."""
+        try:
+            # Add to error history
+            error_entry = {
+                'timestamp': datetime.now(),
+                'title': title,
+                'message': message,
+                'type': error_type
+            }
+            self._error_history.append(error_entry)
+            
+            # Keep only last 50 errors
+            if len(self._error_history) > 50:
+                self._error_history = self._error_history[-50:]
+            
+            # Create notification window
+            notification = tk.Toplevel(self.root)
+            notification.title(title)
+            notification.geometry("400x200")
+            notification.resizable(False, False)
+            notification.transient(self.root)
+            notification.grab_set()
+            
+            # Center the notification
+            notification.update_idletasks()
+            x = (notification.winfo_screenwidth() // 2) - (400 // 2)
+            y = (notification.winfo_screenheight() // 2) - (200 // 2)
+            notification.geometry(f"400x200+{x}+{y}")
+            
+            # Error icon and message
+            main_frame = ttk.Frame(notification, padding="20")
+            main_frame.pack(fill='both', expand=True)
+            
+            # Icon based on error type
+            icon_text = "⚠️" if error_type == "warning" else "❌" if error_type == "error" else "ℹ️"
+            icon_label = ttk.Label(main_frame, text=icon_text, font=('Arial', 24))
+            icon_label.pack(pady=(0, 10))
+            
+            # Title
+            title_label = ttk.Label(main_frame, text=title, font=('Arial', 12, 'bold'))
+            title_label.pack(pady=(0, 5))
+            
+            # Message
+            message_label = ttk.Label(main_frame, text=message, wraplength=350, justify='center')
+            message_label.pack(pady=(0, 15))
+            
+            # Buttons frame
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill='x')
+            
+            if allow_retry and retry_callback:
+                retry_btn = ttk.Button(button_frame, text="Retry", 
+                                     command=lambda: [notification.destroy(), retry_callback()])
+                retry_btn.pack(side='left', padx=(0, 10))
+            
+            ok_btn = ttk.Button(button_frame, text="OK", command=notification.destroy)
+            ok_btn.pack(side='right')
+            
+            # Auto-close after duration
+            if duration > 0:
+                notification.after(duration, notification.destroy)
+            
+            # Animate notification
+            self._animate_fade(notification, start_alpha=0.0, end_alpha=1.0, duration=300)
+            
+        except Exception as e:
+            # Fallback to simple messagebox if notification fails
+            messagebox.showerror(title, f"{message}\n\nNotification error: {str(e)}")
+    
+    def _handle_operation_error(self, operation_name, error, allow_retry=True, retry_callback=None):
+        """Handle operation errors with intelligent retry logic."""
+        error_key = f"{operation_name}_{str(error)}"
+        
+        # Track retry attempts
+        if error_key not in self._retry_attempts:
+            self._retry_attempts[error_key] = 0
+        
+        self._retry_attempts[error_key] += 1
+        
+        # Determine if retry is available
+        can_retry = (allow_retry and 
+                    retry_callback and 
+                    self._retry_attempts[error_key] <= self._max_retry_attempts)
+        
+        # Format error message
+        error_msg = str(error)
+        if self._retry_attempts[error_key] > 1:
+            error_msg += f"\n\nAttempt {self._retry_attempts[error_key]} of {self._max_retry_attempts + 1}"
+        
+        # Show error notification
+        self._show_error_notification(
+            title=f"{operation_name} Failed",
+            message=error_msg,
+            error_type="error",
+            allow_retry=can_retry,
+            retry_callback=retry_callback
+        )
+        
+        # Log error
+        if hasattr(self, 'logger'):
+            self.logger.error(f"{operation_name} failed: {error}")
+    
+    def _show_success_notification(self, title, message, duration=3000):
+        """Show success notification with fade animation."""
+        try:
+            # Create temporary success label
+            success_frame = ttk.Frame(self.root)
+            success_frame.place(relx=0.5, rely=0.1, anchor='center')
+            
+            success_label = ttk.Label(success_frame, text=f"✅ {title}: {message}", 
+                                    background='#d4edda', foreground='#155724',
+                                    padding="10", font=('Arial', 10, 'bold'))
+            success_label.pack()
+            
+            # Animate and auto-remove
+            self._animate_fade(success_frame, start_alpha=0.0, end_alpha=1.0, duration=300)
+            
+            def remove_notification():
+                self._animate_fade(success_frame, start_alpha=1.0, end_alpha=0.0, duration=300,
+                                 callback=lambda: success_frame.destroy())
+            
+            self.root.after(duration, remove_notification)
+            
+        except Exception as e:
+            # Fallback to status update
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text=f"{title}: {message}", foreground='#27ae60')
+    
+    def _validate_input(self, value, validation_type, field_name="Field"):
+        """Validate user input with detailed error messages."""
+        try:
+            if validation_type == "path":
+                if not value or not value.strip():
+                    raise ValueError(f"{field_name} cannot be empty")
+                path = Path(value.strip())
+                if not path.exists():
+                    raise ValueError(f"{field_name} does not exist: {value}")
+                return str(path.resolve())
+            
+            elif validation_type == "directory":
+                validated_path = self._validate_input(value, "path", field_name)
+                path = Path(validated_path)
+                if not path.is_dir():
+                    raise ValueError(f"{field_name} must be a directory: {value}")
+                return validated_path
+            
+            elif validation_type == "file":
+                validated_path = self._validate_input(value, "path", field_name)
+                path = Path(validated_path)
+                if not path.is_file():
+                    raise ValueError(f"{field_name} must be a file: {value}")
+                return validated_path
+            
+            elif validation_type == "number":
+                if not value or not str(value).strip():
+                    raise ValueError(f"{field_name} cannot be empty")
+                try:
+                    return int(value)
+                except ValueError:
+                    raise ValueError(f"{field_name} must be a valid number: {value}")
+            
+            elif validation_type == "positive_number":
+                number = self._validate_input(value, "number", field_name)
+                if number <= 0:
+                    raise ValueError(f"{field_name} must be positive: {value}")
+                return number
+            
+            else:
+                raise ValueError(f"Unknown validation type: {validation_type}")
+                
+        except Exception as e:
+            self._show_error_notification(
+                title="Input Validation Error",
+                message=str(e),
+                error_type="warning"
+            )
+            raise
+    
+    def _check_memory_usage(self):
+        """Monitor memory usage and trigger cleanup if needed using enhanced monitoring."""
+        try:
+            # Use the enhanced memory monitoring from MetadataExtractor
+            memory_stats = MetadataExtractor.get_memory_stats()
+            memory_percent = memory_stats.get('percent', 0)
+            
+            # Check if cleanup is needed
+            cleanup_result = MetadataExtractor.check_and_cleanup_memory()
+            if cleanup_result:
+                self.status_label.config(
+                    text=f"Memory cleanup: {cleanup_result['memory_freed_mb']:.1f}MB freed",
+                    foreground='#f39c12'
+                )
+                self._memory_warnings = 0
+                return True
+            
+            # Check if memory usage is critical
+            if memory_percent > 85:
+                self._memory_warnings += 1
+                if self._memory_warnings > 3:
+                    # Force aggressive cleanup
+                    self._force_memory_cleanup()
+                    self._memory_warnings = 0
+                return False
+            return True
+        except Exception as e:
+            print(f"Memory monitoring error: {e}")
+            return True  # Continue if memory check fails
+    
+    def _force_memory_cleanup(self):
+        """Force aggressive memory cleanup using enhanced monitoring."""
+        try:
+            # Use the enhanced memory cleanup from MetadataExtractor
+            cleanup_result = MetadataExtractor.force_memory_cleanup()
+            
+            # Clear large data structures in GUI
+            if hasattr(self, 'scan_results') and len(self.scan_results) > 1000:
+                # Keep only recent results
+                self.scan_results = self.scan_results[-500:]
+            
+            # Clear error history
+            if len(self._error_history) > 50:
+                self._error_history = self._error_history[-25:]
+            
+            # Additional GUI-specific cleanup
+            gc.collect()
+            
+            # Update status with detailed information
+            memory_freed = cleanup_result.get('memory_freed_mb', 0)
+            self.status_label.config(
+                text=f"Aggressive cleanup: {memory_freed:.1f}MB freed",
+                foreground='#e74c3c'
+            )
+            
+            # Log the cleanup details
+            if hasattr(self, 'logger'):
+                self.logger.info(f"Forced memory cleanup completed: {cleanup_result}")
+                
+        except Exception as e:
+            print(f"Memory cleanup error: {e}")
+            # Fallback to basic cleanup
+            gc.collect()
+            self.status_label.config(
+                text="Basic memory cleanup performed",
+                foreground='#f39c12'
+            )
+    
+    def _process_results_chunked(self, results, chunk_size=None):
+        """Process results in chunks to manage memory usage."""
+        if chunk_size is None:
+            chunk_size = self._batch_size
+            
+        for i in range(0, len(results), chunk_size):
+            chunk = results[i:i + chunk_size]
+            self._process_results_batch(chunk)
+            
+            # Check memory and force cleanup if needed
+            if not self._check_memory_usage():
+                break
+                
+            # Periodic garbage collection
+            if i % (chunk_size * 5) == 0:
+                gc.collect()
         
     def setup_styling(self):
         """Configure modern styling and themes with enhanced visual appeal."""
@@ -522,8 +1121,9 @@ class MetaCLIGUI:
         action_frame = ttk.Frame(main_frame)
         action_frame.grid(row=3, column=0, columnspan=3, pady=(0, 15))
         
-        ttk.Button(action_frame, text="🔍 Start Scan", command=self.scan_directory, 
-                  style='Action.TButton').pack(side=tk.LEFT, padx=(0, 10))
+        self.scan_btn = ttk.Button(action_frame, text="🔍 Start Scan", command=self.scan_directory, 
+                  style='Action.TButton')
+        self.scan_btn.pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(action_frame, text="📊 View Details", command=self.view_selected_metadata, 
                   style='Action.TButton').pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(action_frame, text="💾 Export Results", command=self.export_results, 
@@ -672,6 +1272,27 @@ class MetaCLIGUI:
         main_frame = ttk.Frame(parent, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
+        # Templates and Presets
+        templates_frame = ttk.LabelFrame(main_frame, text="Templates & Presets", padding="10")
+        templates_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Template selection
+        template_selection_frame = ttk.Frame(templates_frame)
+        template_selection_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(template_selection_frame, text="Template:").pack(side=tk.LEFT)
+        self.template_var = tk.StringVar(value="Custom")
+        self.template_combo = ttk.Combobox(template_selection_frame, textvariable=self.template_var, 
+                                          values=["Custom", "Basic Extraction", "Full Metadata", "Images Only", "Documents Only", "Media Files"],
+                                          state="readonly", width=20)
+        self.template_combo.pack(side=tk.LEFT, padx=(5, 10))
+        self.template_combo.bind('<<ComboboxSelected>>', self.on_template_selected)
+        
+        # Template control buttons
+        ttk.Button(template_selection_frame, text="Apply Template", command=self.apply_template).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(template_selection_frame, text="Save as Template", command=self.save_template).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(template_selection_frame, text="Delete Template", command=self.delete_template).pack(side=tk.LEFT)
+        
         # Source selection
         source_frame = ttk.LabelFrame(main_frame, text="Source Selection", padding="10")
         source_frame.pack(fill=tk.X, pady=(0, 10))
@@ -711,6 +1332,63 @@ class MetaCLIGUI:
         self.batch_file_types.set("All Files")
         self.batch_file_types.pack(side=tk.LEFT, padx=(10, 0), fill=tk.X, expand=True)
         
+        # Advanced filtering options
+        advanced_filter_frame = ttk.LabelFrame(options_frame, text="Advanced Filters", padding="5")
+        advanced_filter_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # File size filter
+        size_frame = ttk.Frame(advanced_filter_frame)
+        size_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.batch_enable_size_filter = tk.BooleanVar(value=False)
+        ttk.Checkbutton(size_frame, text="Filter by file size:", variable=self.batch_enable_size_filter).pack(side=tk.LEFT)
+        
+        ttk.Label(size_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 2))
+        self.batch_min_size = tk.StringVar(value="0")
+        ttk.Entry(size_frame, textvariable=self.batch_min_size, width=8).pack(side=tk.LEFT, padx=(0, 2))
+        
+        self.batch_min_size_unit = ttk.Combobox(size_frame, values=["B", "KB", "MB", "GB"], state="readonly", width=4)
+        self.batch_min_size_unit.set("KB")
+        self.batch_min_size_unit.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Label(size_frame, text="Max:").pack(side=tk.LEFT, padx=(0, 2))
+        self.batch_max_size = tk.StringVar(value="100")
+        ttk.Entry(size_frame, textvariable=self.batch_max_size, width=8).pack(side=tk.LEFT, padx=(0, 2))
+        
+        self.batch_max_size_unit = ttk.Combobox(size_frame, values=["B", "KB", "MB", "GB"], state="readonly", width=4)
+        self.batch_max_size_unit.set("MB")
+        self.batch_max_size_unit.pack(side=tk.LEFT)
+        
+        # Date range filter
+        date_frame = ttk.Frame(advanced_filter_frame)
+        date_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.batch_enable_date_filter = tk.BooleanVar(value=False)
+        ttk.Checkbutton(date_frame, text="Filter by modification date:", variable=self.batch_enable_date_filter).pack(side=tk.LEFT)
+        
+        ttk.Label(date_frame, text="From:").pack(side=tk.LEFT, padx=(10, 2))
+        self.batch_date_from = tk.StringVar(value="2020-01-01")
+        ttk.Entry(date_frame, textvariable=self.batch_date_from, width=12).pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Label(date_frame, text="To:").pack(side=tk.LEFT, padx=(0, 2))
+        self.batch_date_to = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        ttk.Entry(date_frame, textvariable=self.batch_date_to, width=12).pack(side=tk.LEFT)
+        
+        # Metadata criteria filter
+        metadata_frame = ttk.Frame(advanced_filter_frame)
+        metadata_frame.pack(fill=tk.X)
+        
+        self.batch_enable_metadata_filter = tk.BooleanVar(value=False)
+        ttk.Checkbutton(metadata_frame, text="Filter by metadata:", variable=self.batch_enable_metadata_filter).pack(side=tk.LEFT)
+        
+        ttk.Label(metadata_frame, text="Field:").pack(side=tk.LEFT, padx=(10, 2))
+        self.batch_metadata_field = ttk.Combobox(metadata_frame, values=["title", "artist", "album", "genre", "year", "duration", "bitrate"], width=10)
+        self.batch_metadata_field.pack(side=tk.LEFT, padx=(0, 5))
+        
+        ttk.Label(metadata_frame, text="Contains:").pack(side=tk.LEFT, padx=(0, 2))
+        self.batch_metadata_value = tk.StringVar()
+        ttk.Entry(metadata_frame, textvariable=self.batch_metadata_value, width=15).pack(side=tk.LEFT)
+        
         # Processing settings
         settings_frame = ttk.Frame(options_frame)
         settings_frame.pack(fill=tk.X)
@@ -748,6 +1426,41 @@ class MetaCLIGUI:
         self.batch_separate_files = tk.BooleanVar(value=False)
         ttk.Checkbutton(format_frame, text="Separate file per directory", variable=self.batch_separate_files).pack(side=tk.LEFT)
         
+        # Queue Management
+        queue_frame = ttk.LabelFrame(main_frame, text="Processing Queue", padding="10")
+        queue_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Queue display
+        queue_display_frame = ttk.Frame(queue_frame)
+        queue_display_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(queue_display_frame, text="Queue Status:").pack(side=tk.LEFT)
+        self.queue_status_label = ttk.Label(queue_display_frame, text="Empty (0 jobs)", foreground="gray")
+        self.queue_status_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Queue listbox
+        self.queue_listbox = tk.Listbox(queue_frame, height=4)
+        self.queue_listbox.pack(fill=tk.X, pady=(0, 10))
+        
+        # Queue control buttons
+        queue_buttons_frame = ttk.Frame(queue_frame)
+        queue_buttons_frame.pack(fill=tk.X)
+        
+        ttk.Button(queue_buttons_frame, text="Add to Queue", command=self.add_to_queue).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(queue_buttons_frame, text="Remove Selected", command=self.remove_from_queue).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(queue_buttons_frame, text="Clear Queue", command=self.clear_queue).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(queue_buttons_frame, text="Move Up", command=self.move_queue_item_up).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(queue_buttons_frame, text="Move Down", command=self.move_queue_item_down).pack(side=tk.LEFT)
+        
+        # Priority settings
+        priority_frame = ttk.Frame(queue_frame)
+        priority_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(priority_frame, text="Priority:").pack(side=tk.LEFT)
+        self.queue_priority = ttk.Combobox(priority_frame, values=["High", "Normal", "Low"], state="readonly", width=10)
+        self.queue_priority.set("Normal")
+        self.queue_priority.pack(side=tk.LEFT, padx=(5, 0))
+        
         # Progress and control
         control_frame = ttk.LabelFrame(main_frame, text="Batch Processing Control", padding="10")
         control_frame.pack(fill=tk.X, pady=(0, 10))
@@ -755,6 +1468,10 @@ class MetaCLIGUI:
         # Progress bar
         self.batch_progress = ttk.Progressbar(control_frame, mode='determinate')
         self.batch_progress.pack(fill=tk.X, pady=(0, 10))
+        
+        # File-level progress indicator
+        self.batch_current_file = ttk.Label(control_frame, text="", foreground="gray")
+        self.batch_current_file.pack(anchor=tk.W, pady=(0, 5))
         
         # Status label
         self.batch_status = ttk.Label(control_frame, text="Ready to start batch processing")
@@ -767,6 +1484,9 @@ class MetaCLIGUI:
         self.batch_start_btn = ttk.Button(buttons_frame, text="Start Batch Processing", command=self.start_batch_processing)
         self.batch_start_btn.pack(side=tk.LEFT, padx=(0, 10))
         
+        self.queue_start_btn = ttk.Button(buttons_frame, text="Start Queue Processing", command=self.start_queue_processing)
+        self.queue_start_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
         self.batch_stop_btn = ttk.Button(buttons_frame, text="Stop Processing", command=self.stop_batch_processing, state=tk.DISABLED)
         self.batch_stop_btn.pack(side=tk.LEFT, padx=(0, 10))
         
@@ -776,13 +1496,12 @@ class MetaCLIGUI:
         summary_frame = ttk.LabelFrame(main_frame, text="Processing Summary", padding="10")
         summary_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.batch_summary = scrolledtext.ScrolledText(summary_frame, height=6, wrap=tk.WORD)
+        self.batch_summary = scrolledtext.ScrolledText(summary_frame, height=8, wrap=tk.WORD)
         self.batch_summary.pack(fill=tk.BOTH, expand=True)
         
-        # Initialize batch processing variables
-        self.batch_processing = False
-        self.batch_stop_requested = False
-        self.batch_directories = []
+        # Add pause/resume button
+        self.batch_pause_btn = ttk.Button(buttons_frame, text="Pause", command=self.pause_batch_processing, state=tk.DISABLED)
+        self.batch_pause_btn.pack(side=tk.LEFT, padx=(0, 10))
     
     def setup_batch_operations_tab(self, parent):
         """Set up batch file operations interface."""
@@ -1109,6 +1828,32 @@ class MetaCLIGUI:
         ttk.Entry(plugin_frame, textvariable=self.plugin_dir).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 5))
         ttk.Button(plugin_frame, text="Browse", command=self.browse_plugin_dir).pack(side=tk.LEFT)
         
+        # Update Settings
+        update_frame = ttk.LabelFrame(scrollable_frame, text="Update Settings", padding="10")
+        update_frame.pack(fill=tk.X, pady=(0, 10), padx=(0, 20))
+        
+        # Update preferences
+        self.auto_check_updates = tk.BooleanVar(value=True)
+        ttk.Checkbutton(update_frame, text="Automatically check for stable updates on startup", variable=self.auto_check_updates).pack(anchor=tk.W, pady=(0, 5))
+        
+        self.notify_beta_updates = tk.BooleanVar(value=False)
+        ttk.Checkbutton(update_frame, text="Show notifications for beta releases", variable=self.notify_beta_updates).pack(anchor=tk.W, pady=(0, 10))
+        
+        # Update buttons
+        update_buttons_frame = ttk.Frame(update_frame)
+        update_buttons_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(update_buttons_frame, text="Check for Stable Updates", command=self.check_updates).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(update_buttons_frame, text="Check for Beta Updates", command=self.check_beta_updates).pack(side=tk.LEFT)
+        
+        # Beta warning
+        beta_warning_frame = ttk.Frame(update_frame)
+        beta_warning_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        warning_label = ttk.Label(beta_warning_frame, text="⚠️ Beta versions may contain bugs and are not recommended for production use.", 
+                                 foreground="orange", font=("TkDefaultFont", 8))
+        warning_label.pack(anchor=tk.W)
+        
         # Reset and apply buttons
         buttons_frame = ttk.Frame(scrollable_frame)
         buttons_frame.pack(fill=tk.X, pady=(20, 0), padx=(0, 20))
@@ -1123,15 +1868,58 @@ class MetaCLIGUI:
         scrollbar.pack(side="right", fill="y")
         
     def setup_status_bar(self):
-        """Set up the status bar at the bottom."""
+        """Set up the status bar at the bottom with memory monitoring."""
         self.status_bar = ttk.Frame(self.root)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=(0, 5))
         
         self.status_text = ttk.Label(self.status_bar, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
         self.status_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
+        # Memory monitoring display
+        self.memory_label = ttk.Label(self.status_bar, text="Memory: --", relief=tk.SUNKEN)
+        self.memory_label.pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Cache status display
+        self.cache_label = ttk.Label(self.status_bar, text="Cache: --", relief=tk.SUNKEN)
+        self.cache_label.pack(side=tk.RIGHT, padx=(5, 0))
+        
         self.version_label = ttk.Label(self.status_bar, text="MetaCLI v2.0", relief=tk.SUNKEN)
-        self.version_label.pack(side=tk.RIGHT)
+        self.version_label.pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Start memory monitoring timer
+        self._start_memory_monitoring()
+    
+    def _start_memory_monitoring(self):
+        """Start periodic memory monitoring updates."""
+        self._update_memory_display()
+        # Schedule next update in 5 seconds
+        self.root.after(5000, self._start_memory_monitoring)
+    
+    def _update_memory_display(self):
+        """Update memory and cache information in status bar."""
+        try:
+            memory_stats = MetadataExtractor.get_memory_stats()
+            
+            # Update memory display
+            memory_percent = memory_stats.get('percent', 0)
+            memory_mb = memory_stats.get('used_mb', 0)
+            memory_color = '#e74c3c' if memory_percent > 85 else '#f39c12' if memory_percent > 75 else '#27ae60'
+            self.memory_label.config(
+                text=f"Memory: {memory_percent:.1f}% ({memory_mb:.0f}MB)",
+                foreground=memory_color
+            )
+            
+            # Update cache display
+            cache_size = memory_stats.get('cache_size', 0)
+            cache_mb = memory_stats.get('cache_memory_mb', 0)
+            self.cache_label.config(
+                text=f"Cache: {cache_size} items ({cache_mb:.1f}MB)"
+            )
+            
+        except Exception as e:
+            # Fallback to basic display if enhanced monitoring fails
+            self.memory_label.config(text="Memory: N/A")
+            self.cache_label.config(text="Cache: N/A")
         
     # Event handlers and utility methods
     def set_path(self, path):
@@ -1139,10 +1927,16 @@ class MetaCLIGUI:
         self.current_path.set(str(path))
         
     def browse_directory(self):
-        """Browse for a directory."""
-        directory = filedialog.askdirectory(title="Select Directory to Scan")
-        if directory:
-            self.current_path.set(directory)
+        """Browse for a directory with enhanced error handling."""
+        try:
+            directory = filedialog.askdirectory(title="Select Directory to Scan")
+            if directory:
+                # Validate the selected directory
+                validated_path = self._validate_input(directory, "directory", "Selected directory")
+                self.current_path.set(validated_path)
+                self._show_success_notification("Directory Selected", f"Ready to scan: {os.path.basename(validated_path)}")
+        except Exception as e:
+            self._handle_operation_error("Directory Selection", e)
             
     def open_file(self):
         """Open a single file."""
@@ -1157,7 +1951,7 @@ class MetaCLIGUI:
             self.metadata_file_var.set(file_path)
             
     def scan_directory(self):
-        """Start directory scanning in a separate thread."""
+        """Start directory scanning with enhanced threading and visual feedback."""
         if not self.current_path.get():
             messagebox.showwarning("Warning", "Please select a path to scan.")
             return
@@ -1165,19 +1959,42 @@ class MetaCLIGUI:
         if self.processing:
             messagebox.showinfo("Info", "Scan already in progress.")
             return
+        
+        # Enhanced error handling and validation
+        try:
+            # Validate input using enhanced validation
+            path = self._validate_input(
+                self.current_path.get(), 
+                "directory", 
+                "Scan directory"
+            )
+        except ValueError:
+            return  # Error already shown by validation method
             
-        # Start scanning in background thread
+        # Start scanning with improved threading
         self.processing = True
+        self._stop_event.clear()
+        self.scanner.set_stop_event(self._stop_event)
+        
+        # Enhanced visual feedback
         self.progress.start()
-        self.status_label.config(text="Scanning...", foreground='#f39c12')
+        self._show_loading_animation(self.status_label, "Scanning directory...")
+        self._animate_pulse(self.scan_btn, duration=2000)
+        
+        # Disable scan button during processing
+        self.scan_btn.configure(state='disabled')
         
         thread = threading.Thread(target=self._scan_worker, daemon=True)
+        self._register_thread(thread)
         thread.start()
         
     def _scan_worker(self):
-        """Worker thread for scanning."""
+        """Enhanced worker thread for scanning with stop event checking."""
         try:
             path = Path(self.current_path.get())
+            
+            if self._stop_event.is_set():
+                return
             
             if path.is_file():
                 # Single file analysis
@@ -1196,11 +2013,23 @@ class MetaCLIGUI:
                     max_workers=2  # Limit workers to prevent UI blocking
                 )
                 
-                # Convert ScanResult objects to GUI format and apply max_files limit
+                # Convert ScanResult objects to GUI format with memory management
                 results = []
+                self._processed_count = 0
+                
                 for i, scan_result in enumerate(scan_results):
+                    if self._stop_event.is_set():
+                        break
                     if max_files and i >= max_files:
                         break
+                    
+                    # Check memory usage periodically
+                    if i % self._gc_frequency == 0:
+                        if not self._check_memory_usage():
+                            # Memory threshold exceeded, process current batch
+                            if results:
+                                self.root.after(0, self._process_results_chunked, results)
+                                results = []  # Clear processed results
                     
                     result_dict = {
                         'path': str(scan_result.file_path),
@@ -1213,14 +2042,25 @@ class MetaCLIGUI:
                         result_dict['error'] = scan_result.error
                     
                     results.append(result_dict)
+                    self._processed_count += 1
                     
-                    # Update progress periodically to keep UI responsive
-                    if i % 10 == 0:
+                    # Process in smaller batches to prevent memory buildup and improve responsiveness
+                    if len(results) >= min(self._batch_size, 25):  # Smaller batch size for better responsiveness
+                        self.root.after_idle(self._process_results_chunked, results.copy())
+                        results = []  # Clear processed results
+                        gc.collect()  # Force garbage collection
+                    
+                    # Update progress less frequently to keep UI more responsive
+                    if i % 25 == 0:  # Reduced frequency from 10 to 25
                         progress = min(100, (i / min(len(scan_results), max_files or len(scan_results))) * 100)
-                        self.root.after(0, self._update_scan_progress, progress)
+                        self.root.after_idle(self._update_scan_progress, progress)  # Use after_idle for better responsiveness
                 
-            # Update UI in main thread
-            self.root.after(0, self._update_results, results)
+            # Process any remaining results
+            if results:
+                self.root.after(0, self._process_results_chunked, results)
+            else:
+                # If no chunked processing, use original method
+                self.root.after(0, self._update_results, [])
             
         except Exception as e:
             self.root.after(0, self._handle_scan_error, str(e))
@@ -1251,11 +2091,18 @@ class MetaCLIGUI:
         self.status_label.config(text=f"Scanning... {progress:.0f}%", foreground='#f39c12')
             
     def _update_results(self, results):
-        """Update the results tree with scan results."""
-        # Clear existing results efficiently
-        self.results_tree.delete(*self.results_tree.get_children())
+        """Update the results tree with scan results (legacy method for compatibility)."""
+        # For chunked processing, append to existing results
+        if not hasattr(self, 'scan_results') or not self.scan_results:
+            # Clear existing results only for new scans
+            self.results_tree.delete(*self.results_tree.get_children())
+            self.scan_results = []
             
-        self.scan_results = results
+        # Append new results
+        self.scan_results.extend(results)
+        
+        # Process the new results batch
+        self._process_results_batch(results)
         
         # Initialize statistics tracking
         self._total_size = 0
@@ -1278,52 +2125,87 @@ class MetaCLIGUI:
             self.root.after(delay, self._process_results_batch, batch_results)
             
     def _process_results_batch(self, batch_results):
-        """Process a batch of results to keep UI responsive."""
-        for result in batch_results:
-            if isinstance(result, dict) and 'path' in result:
-                path = result['path']
-                size = result.get('size', 0)
-                modified = result.get('modified')
-                
-                # Extract file info
-                file_path = Path(path)
-                extension = file_path.suffix.lower()
-                file_type = self._get_file_type(extension)
-                
-                # Format values
-                size_str = self._format_size(size)
-                modified_str = modified.strftime('%Y-%m-%d %H:%M') if modified else 'Unknown'
-                
-                # Insert into tree
-                self.results_tree.insert('', 'end', text=path, values=(
-                    size_str, file_type, modified_str, extension
-                ))
-                
-                # Update statistics
-                self._total_size += size
-                if extension:
-                    self._file_types.add(extension)
-            else:
-                # Handle string results from scanner (fallback)
-                file_path = Path(result)
-                if file_path.exists():
-                    stat = file_path.stat()
-                    size = stat.st_size
-                    modified = datetime.fromtimestamp(stat.st_mtime)
+        """Process a batch of results to keep UI responsive with memory management."""
+        # Check memory before processing batch
+        if not self._check_memory_usage():
+            # Skip processing if memory is critical
+            return
+            
+        processed_count = 0
+        batch_items = []
+        
+        try:
+            for result in batch_results:
+                if isinstance(result, dict) and 'path' in result:
+                    path = result['path']
+                    size = result.get('size', 0)
+                    modified = result.get('modified')
+                    
+                    # Extract file info
+                    file_path = Path(path)
                     extension = file_path.suffix.lower()
                     file_type = self._get_file_type(extension)
                     
+                    # Format values
                     size_str = self._format_size(size)
-                    modified_str = modified.strftime('%Y-%m-%d %H:%M')
+                    modified_str = modified.strftime('%Y-%m-%d %H:%M') if modified else 'Unknown'
                     
-                    self.results_tree.insert('', 'end', text=str(file_path), values=(
-                        size_str, file_type, modified_str, extension
-                    ))
+                    # Store item data for batch insertion
+                    batch_items.append((path, (size_str, file_type, modified_str, extension)))
                     
                     # Update statistics
                     self._total_size += size
                     if extension:
                         self._file_types.add(extension)
+                        
+                    processed_count += 1
+                    
+                else:
+                    # Handle string results from scanner (fallback)
+                    file_path = Path(result)
+                    if file_path.exists():
+                        stat = file_path.stat()
+                        size = stat.st_size
+                        modified = datetime.fromtimestamp(stat.st_mtime)
+                        extension = file_path.suffix.lower()
+                        file_type = self._get_file_type(extension)
+                        
+                        size_str = self._format_size(size)
+                        modified_str = modified.strftime('%Y-%m-%d %H:%M')
+                        
+                        # Store item data for batch insertion
+                        batch_items.append((str(file_path), (size_str, file_type, modified_str, extension)))
+                        
+                        # Update statistics
+                        self._total_size += size
+                        if extension:
+                            self._file_types.add(extension)
+                            
+                    processed_count += 1
+                
+                # Periodic memory check during batch processing - reduced frequency
+                if processed_count % 50 == 0:  # Further reduced frequency for better performance
+                    if not self._check_memory_usage():
+                        break  # Stop processing if memory is critical
+            
+            # Batch insert all items at once for better performance
+            for text, values in batch_items:
+                self.results_tree.insert('', 'end', text=text, values=values)
+            
+            # Force garbage collection after processing batch
+            gc.collect()
+            
+        finally:
+            # Clear batch items and scan results to free memory
+            batch_items.clear()
+            # Clear scan results after all batches are processed
+            if hasattr(self, 'scan_results'):
+                self.scan_results.clear()
+            del batch_items
+            
+            # Force garbage collection after processing batch
+            if processed_count > 100:
+                gc.collect()
         
         # Update batch counter and statistics when batch is complete
         self._processed_batches += 1
@@ -1332,17 +2214,52 @@ class MetaCLIGUI:
             self.stats_label.config(
                 text=f"Files: {len(self.scan_results)} | Total Size: {self._format_size(self._total_size)} | Types: {len(self._file_types)}"
             )
+            # Clear scan results to free memory after processing
+            if hasattr(self, 'scan_results'):
+                self.scan_results.clear()
+            # Final cleanup after all batches
+            gc.collect()
         
     def _handle_scan_error(self, error_msg):
-        """Handle scan errors."""
-        messagebox.showerror("Scan Error", f"An error occurred during scanning:\n{error_msg}")
-        self.status_label.config(text="Scan failed", foreground='#e74c3c')
-        
-    def _scan_complete(self):
-        """Complete the scanning process."""
+        """Handle scan errors with enhanced feedback."""
         self.processing = False
         self.progress.stop()
-        self.status_label.config(text="Scan completed", foreground='#27ae60')
+        
+        # Stop animations and restore UI
+        self._stop_loading_animation(self.status_label, "Scan failed")
+        self._pulse_animations.pop(self.scan_btn, None)
+        self.scan_btn.configure(state='normal')
+        
+        # Show enhanced error notification with retry option
+        self._handle_operation_error(
+            operation_name="Directory Scan",
+            error=error_msg,
+            allow_retry=True,
+            retry_callback=self.scan_directory
+        )
+        
+        # Animate error state
+        self._animate_pulse(self.status_label, duration=1500, intensity=0.3)
+        
+    def _scan_complete(self):
+        """Complete the scanning process with enhanced feedback."""
+        self.processing = False
+        self.progress.stop()
+        
+        # Stop animations and restore UI
+        self._stop_loading_animation(self.status_label, "Scan completed")
+        self._pulse_animations.pop(self.scan_btn, None)
+        self.scan_btn.configure(state='normal')
+        
+        # Animate completion
+        self._animate_fade(self.status_label, start_alpha=0.5, end_alpha=1.0, duration=500)
+        
+        # Update statistics
+        total_files = len(self.scan_results)
+        self.root.after(100, lambda: self.status_label.config(
+            text=f"Scan completed - {total_files} files processed", 
+            foreground='#27ae60'
+        ))
         
     def _get_file_type(self, extension):
         """Get file type from extension."""
@@ -1487,35 +2404,65 @@ Other:
         self.status_label.config(text="Results cleared", foreground='#27ae60')
     
     def save_results(self):
-        """Save current results to file."""
-        if not self.scan_results:
-            messagebox.showwarning("No Results", "No scan results to save.")
-            return
-        
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        
-        if file_path:
-            try:
-                if file_path.endswith('.csv'):
-                    # Save as CSV
-                    import csv
-                    with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                        if self.scan_results:
-                            writer = csv.DictWriter(f, fieldnames=self.scan_results[0].keys())
-                            writer.writeheader()
-                            writer.writerows(self.scan_results)
-                else:
-                    # Save as JSON
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        json.dump(self.scan_results, f, indent=2, ensure_ascii=False, default=str)
+        """Save current results to file with enhanced validation."""
+        try:
+            # Validate scan results
+            if not self.scan_results:
+                self._show_error_notification(
+                    "No Results Available",
+                    "No scan results to save. Please run a scan first.",
+                    error_type="warning"
+                )
+                return
+            
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            
+            if not file_path:
+                return  # User cancelled
                 
-                self.status_label.config(text=f"Results saved to {file_path}", foreground='#27ae60')
-                messagebox.showinfo("Success", f"Results saved successfully to {file_path}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save results: {str(e)}")
+            # Validate file path
+            try:
+                self._validate_input(os.path.dirname(file_path), "directory", "Output directory")
+            except ValueError:
+                return
+                
+            # Save results
+            if file_path.endswith('.csv'):
+                # Save as CSV
+                with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                    if self.scan_results:
+                        writer = csv.DictWriter(f, fieldnames=self.scan_results[0].keys())
+                        writer.writeheader()
+                        writer.writerows(self.scan_results)
+            else:
+                # Save as JSON
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.scan_results, f, indent=2, ensure_ascii=False, default=str)
+            
+            # Show success notification
+            self.status_label.config(text=f"Results saved to {file_path}", foreground='#27ae60')
+            self._show_success_notification(
+                "Save Successful",
+                f"Results saved successfully to {os.path.basename(file_path)}"
+            )
+            
+        except PermissionError as e:
+            self._handle_operation_error(
+                "Save Results",
+                f"Permission denied: {e}",
+                allow_retry=True,
+                retry_callback=lambda: self.save_results()
+            )
+        except Exception as e:
+            self._handle_operation_error(
+                "Save Results",
+                e,
+                allow_retry=True,
+                retry_callback=lambda: self.save_results()
+            )
     
     def refresh_current_view(self):
         """Refresh the current view/tab."""
@@ -1638,29 +2585,63 @@ Other:
             self.batch_output_path.set(directory)
     
     def start_batch_processing(self):
-        """Start batch metadata extraction."""
-        if not self.batch_directories:
-            messagebox.showwarning("No Directories", "Please add at least one directory for batch processing.")
-            return
-        
-        if self.batch_processing:
-            messagebox.showinfo("Already Processing", "Batch processing is already in progress.")
-            return
-        
-        # Prepare output directory
-        output_dir = self.batch_output_path.get()
-        if not os.path.exists(output_dir):
-            try:
-                os.makedirs(output_dir)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create output directory: {e}")
+        """Start batch metadata extraction with enhanced validation."""
+        try:
+            # Validate batch directories
+            if not self.batch_directories:
+                self._show_error_notification(
+                    "No Directories Selected",
+                    "Please add at least one directory for batch processing.",
+                    error_type="warning"
+                )
                 return
+                
+            if self.batch_processing:
+                self._show_error_notification(
+                    "Processing In Progress",
+                    "Batch processing is already running.",
+                    error_type="info"
+                )
+                return
+                
+            # Validate output directory
+            output_dir = self._validate_input(
+                self.batch_output_path.get(),
+                "directory",
+                "Output directory"
+            )
+            
+            # Prepare output directory
+            if not os.path.exists(output_dir):
+                try:
+                    os.makedirs(output_dir)
+                except Exception as e:
+                    self._handle_operation_error(
+                        "Create Output Directory",
+                        e,
+                        allow_retry=True,
+                        retry_callback=lambda: self.start_batch_processing()
+                    )
+                    return
+                    
+        except ValueError:
+            return  # Error already shown by validation method
+        except Exception as e:
+            self._handle_operation_error(
+                "Start Batch Processing",
+                e,
+                allow_retry=True,
+                retry_callback=lambda: self.start_batch_processing()
+            )
+            return
         
         # Start processing in a separate thread
         self.batch_processing = True
         self.batch_stop_requested = False
+        self.batch_paused = False
         self.batch_start_btn.config(state=tk.DISABLED)
         self.batch_stop_btn.config(state=tk.NORMAL)
+        self.batch_pause_btn.config(state=tk.NORMAL, text="Pause")
         
         threading.Thread(target=self._batch_processing_worker, daemon=True).start()
     
@@ -1669,9 +2650,58 @@ Other:
         self.batch_stop_requested = True
         self.batch_status.config(text="Stopping batch processing...")
     
+    def pause_batch_processing(self):
+        """Pause or resume batch processing."""
+        if not hasattr(self, 'batch_paused'):
+            self.batch_paused = False
+            
+        if self.batch_paused:
+            # Resume processing
+            self.batch_paused = False
+            self.batch_pause_btn.config(text="Pause")
+            self.batch_status.config(text="Resuming batch processing...")
+        else:
+            # Pause processing
+            self.batch_paused = True
+            self.batch_pause_btn.config(text="Resume")
+            self.batch_status.config(text="Batch processing paused...")
+    
+    def _extract_metadata_safe(self, file_path):
+        """Safely extract metadata from a file for parallel processing."""
+        try:
+            metadata = self.extractor.extract_metadata(file_path)
+            return {
+                'file_path': file_path,
+                'metadata': metadata
+            }
+        except Exception as e:
+            self.logger.error(f"Error extracting metadata from {file_path}: {e}")
+            return None
+    
+    def _update_batch_ui(self, file_name, progress, processed_count, total_files, directory_name):
+        """Update batch processing UI elements efficiently."""
+        try:
+            # Update current file display
+            self.batch_current_file.config(text=f"Processing: {file_name}")
+            
+            # Update progress bar
+            self.batch_progress.config(value=progress)
+            
+            # Update status text
+            self.batch_status.config(text=f"Processing {directory_name}: {processed_count}/{total_files} files")
+            
+            # Force UI update
+            self.root.update_idletasks()
+        except Exception as e:
+            # Silently handle UI update errors to prevent crashes
+            pass
+    
     def _batch_processing_worker(self):
         """Worker thread for batch processing."""
         try:
+            # Initial memory check
+            self._check_memory_usage()
+            
             total_dirs = len(self.batch_directories)
             processed_dirs = 0
             total_files = 0
@@ -1680,6 +2710,15 @@ Other:
             self.batch_summary.insert(tk.END, f"Starting batch processing of {total_dirs} directories...\n\n")
             
             for i, directory in enumerate(self.batch_directories):
+                if self.batch_stop_requested:
+                    break
+                
+                # Check for pause state
+                while getattr(self, 'batch_paused', False):
+                    if self.batch_stop_requested:
+                        break
+                    time.sleep(0.1)  # Wait while paused
+                
                 if self.batch_stop_requested:
                     break
                 
@@ -1699,20 +2738,106 @@ Other:
                     if file_type != "All Files":
                         files = self._filter_files_by_type(files, file_type)
                     
-                    # Extract metadata
+                    # Apply advanced filters
+                    files = self._apply_advanced_filters(files)
+                    
+                    # Extract metadata with streaming batch processing for memory optimization
                     metadata_results = []
-                    for file_path in files:
+                    
+                    # Determine optimal number of workers and chunk size based on memory
+                    max_workers = min(3, os.cpu_count() or 1)  # Reduced workers for memory
+                    
+                    # Adaptive chunk sizing based on available memory
+                    try:
+                        memory_info = psutil.virtual_memory()
+                        available_gb = memory_info.available / (1024**3)
+                        if available_gb > 4:
+                            chunk_size = min(200, len(files))
+                        elif available_gb > 2:
+                            chunk_size = min(100, len(files))
+                        else:
+                            chunk_size = min(50, len(files))  # Very small chunks for low memory
+                    except:
+                        chunk_size = min(100, len(files))  # Default fallback
+                    
+                    # Process files in chunks to optimize memory usage
+                    for chunk_start in range(0, len(files), chunk_size):
                         if self.batch_stop_requested:
                             break
+                            
+                        chunk_end = min(chunk_start + chunk_size, len(files))
+                        chunk_files = files[chunk_start:chunk_end]
                         
-                        try:
-                            metadata = self.extractor.extract_metadata(file_path)
-                            metadata_results.append({
-                                'file_path': file_path,
-                                'metadata': metadata
-                            })
-                        except Exception as e:
-                            self.logger.error(f"Error extracting metadata from {file_path}: {e}")
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            # Submit chunk for processing
+                            future_to_file = {}
+                            for file_path in chunk_files:
+                                if self.batch_stop_requested:
+                                    break
+                                future = executor.submit(self._extract_metadata_safe, file_path)
+                                future_to_file[future] = file_path
+                            
+                            # Process completed futures in chunk
+                            chunk_processed = 0
+                            for future in as_completed(future_to_file):
+                                if self.batch_stop_requested:
+                                    break
+                                
+                                # Check for pause state
+                                while getattr(self, 'batch_paused', False):
+                                    if self.batch_stop_requested:
+                                        break
+                                    time.sleep(0.1)
+                                
+                                if self.batch_stop_requested:
+                                    break
+                                
+                                file_path = future_to_file[future]
+                                
+                                try:
+                                    result = future.result()
+                                    if result:
+                                        # Apply metadata filtering if enabled
+                                        if self._filter_by_metadata(result['file_path'], result['metadata']):
+                                            metadata_results.append(result)
+                                    
+                                    chunk_processed += 1
+                                    processed_count = chunk_start + chunk_processed
+                                    
+                                    # Batch UI updates to reduce lag - update less frequently
+                                    if chunk_processed % 10 == 0:  # Reduced frequency
+                                        file_name = os.path.basename(file_path)
+                                        progress = (processed_count / len(files)) * 100
+                                        
+                                        # Use after_idle for non-blocking UI updates
+                                        self.root.after_idle(lambda fn=file_name, p=progress, pc=processed_count: 
+                                            self._update_batch_ui(fn, p, pc, len(files), os.path.basename(directory)))
+                                        
+                                        # More frequent memory checks for large datasets
+                                        if chunk_processed % 20 == 0:
+                                            self._check_memory_usage()
+                                            
+                                except Exception as e:
+                                    self.logger.error(f"Error processing {file_path}: {e}")
+                        
+                        # Force garbage collection after each chunk
+                        gc.collect()
+                        
+                        # Check memory usage after each chunk and pause if critical
+                        if not self._check_memory_usage():
+                            # Memory usage is critical, pause briefly to allow cleanup
+                            time.sleep(0.5)
+                            self._force_memory_cleanup()
+                            
+                            # If still critical, reduce chunk size for remaining processing
+                            try:
+                                memory_info = psutil.virtual_memory()
+                                if memory_info.percent > 85:  # Very high memory usage
+                                    chunk_size = max(10, chunk_size // 2)
+                                    self.root.after(0, lambda: self.batch_status.config(
+                                        text=f"High memory usage detected - reducing batch size to {chunk_size}"))
+                            except:
+                                pass
                     
                     # Save results
                     if metadata_results:
@@ -1721,6 +2846,13 @@ Other:
                         
                         self.root.after(0, lambda: self.batch_summary.insert(tk.END, 
                             f"✓ {os.path.basename(directory)}: {len(metadata_results)} files processed\n"))
+                    
+                    # Clear processed results to free memory
+                    metadata_results.clear()
+                    
+                    # Force garbage collection after every 5 directories
+                    if processed_dirs % 5 == 0:
+                        gc.collect()
                     
                 except Exception as e:
                     self.root.after(0, lambda d=directory, err=str(e): self.batch_summary.insert(tk.END, 
@@ -1744,8 +2876,11 @@ Other:
         
         finally:
             self.batch_processing = False
+            self.batch_paused = False
             self.root.after(0, lambda: self.batch_start_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.batch_stop_btn.config(state=tk.DISABLED))
+            self.root.after(0, lambda: self.batch_pause_btn.config(state=tk.DISABLED, text="Pause"))
+            self.root.after(0, lambda: self.batch_current_file.config(text=""))
     
     def _filter_files_by_type(self, files, file_type):
         """Filter files by type."""
@@ -1761,6 +2896,91 @@ Other:
             return files
         
         return [f for f in files if Path(f).suffix.lower() in extensions]
+    
+    def _apply_advanced_filters(self, files):
+        """Apply advanced filtering options to file list."""
+        filtered_files = files.copy()
+        
+        # Apply file size filter
+        if self.batch_enable_size_filter.get():
+            filtered_files = self._filter_by_size(filtered_files)
+        
+        # Apply date range filter
+        if self.batch_enable_date_filter.get():
+            filtered_files = self._filter_by_date(filtered_files)
+        
+        return filtered_files
+    
+    def _filter_by_size(self, files):
+        """Filter files by size range."""
+        try:
+            min_size = float(self.batch_min_size.get() or 0)
+            max_size = float(self.batch_max_size.get() or float('inf'))
+            
+            # Convert to bytes
+            min_unit = self.batch_min_size_unit.get()
+            max_unit = self.batch_max_size_unit.get()
+            
+            unit_multipliers = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
+            min_bytes = min_size * unit_multipliers.get(min_unit, 1)
+            max_bytes = max_size * unit_multipliers.get(max_unit, 1)
+            
+            filtered = []
+            for file_path in files:
+                try:
+                    file_size = os.path.getsize(file_path)
+                    if min_bytes <= file_size <= max_bytes:
+                        filtered.append(file_path)
+                except (OSError, ValueError):
+                    continue
+            
+            return filtered
+        except (ValueError, TypeError):
+            return files
+    
+    def _filter_by_date(self, files):
+        """Filter files by modification date range."""
+        try:
+            from datetime import datetime
+            
+            date_from = datetime.strptime(self.batch_date_from.get(), "%Y-%m-%d")
+            date_to = datetime.strptime(self.batch_date_to.get(), "%Y-%m-%d")
+            
+            # Add one day to include the end date
+            date_to = date_to.replace(hour=23, minute=59, second=59)
+            
+            filtered = []
+            for file_path in files:
+                try:
+                    mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if date_from <= mod_time <= date_to:
+                        filtered.append(file_path)
+                except (OSError, ValueError):
+                    continue
+            
+            return filtered
+        except (ValueError, TypeError):
+            return files
+    
+    def _filter_by_metadata(self, file_path, metadata):
+        """Check if file metadata matches the specified criteria."""
+        if not self.batch_enable_metadata_filter.get():
+            return True
+        
+        try:
+            field = self.batch_metadata_field.get().lower()
+            value = self.batch_metadata_value.get().lower()
+            
+            if not field or not value:
+                return True
+            
+            # Search in metadata
+            if field in metadata and metadata[field]:
+                return value in str(metadata[field]).lower()
+            
+            return False
+        except (AttributeError, TypeError):
+            return True
     
     def _save_batch_results(self, directory, results):
         """Save batch processing results."""
@@ -1806,6 +3026,505 @@ Other:
                 subprocess.run(["xdg-open", output_dir])
         else:
             messagebox.showwarning("Directory Not Found", "Output directory does not exist.")
+    
+    # Queue Management Methods
+    def add_to_queue(self):
+        """Add current batch configuration to processing queue."""
+        if not self.batch_directories:
+            messagebox.showwarning("No Directories", "Please add directories before adding to queue.")
+            return
+        
+        # Create queue item
+        queue_item = {
+            'id': len(self.processing_queue) + 1,
+            'directories': self.batch_directories.copy(),
+            'output_path': self.batch_output_path.get(),
+            'recursive': self.batch_recursive.get(),
+            'max_files': self.batch_max_files.get(),
+            'include_hidden': self.batch_include_hidden.get(),
+            'file_type': self.batch_file_type.get(),
+            'priority': self.queue_priority.get(),
+            'status': 'Pending',
+            'created_at': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Add advanced filter settings if enabled
+        if hasattr(self, 'batch_enable_size_filter') and self.batch_enable_size_filter.get():
+            queue_item['size_filter'] = {
+                'min_size': self.batch_min_size.get(),
+                'min_unit': self.batch_min_size_unit.get(),
+                'max_size': self.batch_max_size.get(),
+                'max_unit': self.batch_max_size_unit.get()
+            }
+        
+        if hasattr(self, 'batch_enable_date_filter') and self.batch_enable_date_filter.get():
+            queue_item['date_filter'] = {
+                'from_date': self.batch_from_date.get(),
+                'to_date': self.batch_to_date.get()
+            }
+        
+        if hasattr(self, 'batch_enable_metadata_filter') and self.batch_enable_metadata_filter.get():
+            queue_item['metadata_filter'] = {
+                'field': self.batch_metadata_field.get(),
+                'value': self.batch_metadata_value.get()
+            }
+        
+        # Insert based on priority
+        if queue_item['priority'] == 'High':
+            self.processing_queue.insert(0, queue_item)
+        else:
+            self.processing_queue.append(queue_item)
+        
+        self._update_queue_display()
+        self.batch_status.config(text=f"Added to queue: {len(self.batch_directories)} directories")
+    
+    def remove_from_queue(self):
+        """Remove selected item from processing queue."""
+        selection = self.queue_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select an item to remove.")
+            return
+        
+        index = selection[0]
+        if 0 <= index < len(self.processing_queue):
+            removed_item = self.processing_queue.pop(index)
+            self._update_queue_display()
+            self.batch_status.config(text=f"Removed queue item #{removed_item['id']}")
+    
+    def clear_queue(self):
+        """Clear all items from processing queue."""
+        if self.processing_queue:
+            result = messagebox.askyesno("Clear Queue", "Are you sure you want to clear all queue items?")
+            if result:
+                self.processing_queue.clear()
+                self.current_queue_index = 0
+                self._update_queue_display()
+                self.batch_status.config(text="Queue cleared")
+    
+    def move_queue_item_up(self):
+        """Move selected queue item up in priority."""
+        selection = self.queue_listbox.curselection()
+        if not selection or selection[0] == 0:
+            return
+        
+        index = selection[0]
+        if 0 < index < len(self.processing_queue):
+            # Swap items
+            self.processing_queue[index], self.processing_queue[index-1] = \
+                self.processing_queue[index-1], self.processing_queue[index]
+            
+            self._update_queue_display()
+            self.queue_listbox.selection_set(index-1)
+    
+    def move_queue_item_down(self):
+        """Move selected queue item down in priority."""
+        selection = self.queue_listbox.curselection()
+        if not selection or selection[0] == len(self.processing_queue) - 1:
+            return
+        
+        index = selection[0]
+        if 0 <= index < len(self.processing_queue) - 1:
+            # Swap items
+            self.processing_queue[index], self.processing_queue[index+1] = \
+                self.processing_queue[index+1], self.processing_queue[index]
+            
+            self._update_queue_display()
+            self.queue_listbox.selection_set(index+1)
+    
+    def start_queue_processing(self):
+        """Start processing items in the queue."""
+        if not self.processing_queue:
+            messagebox.showwarning("Empty Queue", "No items in processing queue.")
+            return
+        
+        if self.queue_processing:
+            messagebox.showinfo("Already Processing", "Queue processing is already in progress.")
+            return
+        
+        self.queue_processing = True
+        self.queue_paused = False
+        self.current_queue_index = 0
+        
+        # Update UI
+        self.batch_start_btn.config(state=tk.DISABLED)
+        self.batch_stop_btn.config(state=tk.NORMAL)
+        self.batch_pause_btn.config(state=tk.NORMAL)
+        
+        # Start queue processing in separate thread
+        threading.Thread(target=self._queue_processing_worker, daemon=True).start()
+    
+    def _update_queue_display(self):
+        """Update the queue display listbox."""
+        self.queue_listbox.delete(0, tk.END)
+        
+        for i, item in enumerate(self.processing_queue):
+            status_icon = "⏳" if item['status'] == 'Pending' else "✓" if item['status'] == 'Completed' else "❌"
+            priority_icon = "🔴" if item['priority'] == 'High' else "🟡" if item['priority'] == 'Normal' else "🟢"
+            
+            display_text = f"{status_icon} {priority_icon} #{item['id']}: {len(item['directories'])} dirs - {item['status']}"
+            self.queue_listbox.insert(tk.END, display_text)
+        
+        # Update queue status
+        pending_count = sum(1 for item in self.processing_queue if item['status'] == 'Pending')
+        self.queue_status.config(text=f"Queue: {len(self.processing_queue)} items ({pending_count} pending)")
+    
+    def _queue_processing_worker(self):
+        """Worker thread for processing queue items."""
+        try:
+            total_items = len(self.processing_queue)
+            
+            for i, queue_item in enumerate(self.processing_queue):
+                if self.batch_stop_requested:
+                    break
+                
+                # Check for pause
+                while self.queue_paused:
+                    if self.batch_stop_requested:
+                        break
+                    time.sleep(0.1)
+                
+                if self.batch_stop_requested:
+                    break
+                
+                # Skip if already completed
+                if queue_item['status'] == 'Completed':
+                    continue
+                
+                # Update current processing item
+                self.current_queue_index = i
+                queue_item['status'] = 'Processing'
+                
+                # Update UI
+                self.root.after(0, self._update_queue_display)
+                self.root.after(0, lambda item=queue_item: 
+                    self.batch_status.config(text=f"Processing queue item #{item['id']}"))
+                
+                # Apply queue item settings to batch processing
+                self._apply_queue_item_settings(queue_item)
+                
+                # Process this queue item
+                try:
+                    self._process_queue_item(queue_item)
+                    queue_item['status'] = 'Completed'
+                    queue_item['completed_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception as e:
+                    queue_item['status'] = 'Failed'
+                    queue_item['error'] = str(e)
+                    self.root.after(0, lambda err=str(e): 
+                        self.batch_summary.insert(tk.END, f"Queue item #{queue_item['id']} failed: {err}\n"))
+                
+                # Update display
+                self.root.after(0, self._update_queue_display)
+            
+            # Complete queue processing
+            completed_count = sum(1 for item in self.processing_queue if item['status'] == 'Completed')
+            self.root.after(0, lambda: self.batch_status.config(
+                text=f"Queue processing completed: {completed_count}/{total_items} items"))
+            
+        except Exception as e:
+            self.root.after(0, lambda err=str(e): 
+                self.batch_status.config(text=f"Queue processing error: {err}"))
+        
+        finally:
+            self.queue_processing = False
+            self.queue_paused = False
+            self.root.after(0, lambda: self.batch_start_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.batch_stop_btn.config(state=tk.DISABLED))
+            self.root.after(0, lambda: self.batch_pause_btn.config(state=tk.DISABLED))
+    
+    def _apply_queue_item_settings(self, queue_item):
+        """Apply queue item settings to current batch processing configuration."""
+        # Set directories
+        self.batch_directories = queue_item['directories'].copy()
+        
+        # Update UI elements
+        self.batch_dirs_listbox.delete(0, tk.END)
+        for directory in self.batch_directories:
+            self.batch_dirs_listbox.insert(tk.END, directory)
+        
+        # Apply settings
+        self.batch_output_path.set(queue_item['output_path'])
+        self.batch_recursive.set(queue_item['recursive'])
+        self.batch_max_files.set(queue_item['max_files'])
+        self.batch_include_hidden.set(queue_item['include_hidden'])
+        self.batch_file_type.set(queue_item['file_type'])
+        
+        # Apply advanced filters if present
+        if 'size_filter' in queue_item:
+            self.batch_enable_size_filter.set(True)
+            size_filter = queue_item['size_filter']
+            self.batch_min_size.set(size_filter['min_size'])
+            self.batch_min_size_unit.set(size_filter['min_unit'])
+            self.batch_max_size.set(size_filter['max_size'])
+            self.batch_max_size_unit.set(size_filter['max_unit'])
+        
+        if 'date_filter' in queue_item:
+            self.batch_enable_date_filter.set(True)
+            date_filter = queue_item['date_filter']
+            self.batch_from_date.set(date_filter['from_date'])
+            self.batch_to_date.set(date_filter['to_date'])
+        
+        if 'metadata_filter' in queue_item:
+            self.batch_enable_metadata_filter.set(True)
+            metadata_filter = queue_item['metadata_filter']
+            self.batch_metadata_field.set(metadata_filter['field'])
+            self.batch_metadata_value.set(metadata_filter['value'])
+    
+    def _process_queue_item(self, queue_item):
+        """Process a single queue item using existing batch processing logic."""
+        # Use the existing batch processing worker logic
+        # This is a simplified version that reuses the batch processing infrastructure
+        
+        total_files = 0
+        for directory in queue_item['directories']:
+            if self.batch_stop_requested:
+                break
+            
+            try:
+                # Scan directory
+                files = self.scanner.scan_directory(
+                    directory,
+                    recursive=queue_item['recursive'],
+                    max_files=queue_item['max_files'],
+                    include_hidden=queue_item['include_hidden']
+                )
+                
+                if not files:
+                    continue
+                
+                # Apply filters
+                files = self._filter_files_by_type(files, queue_item['file_type'])
+                files = self._apply_advanced_filters(files)
+                
+                if not files:
+                    continue
+                
+                # Process files
+                metadata_results = []
+                for file_path in files:
+                    if self.batch_stop_requested:
+                        break
+                    
+                    result = self._extract_metadata_safe(file_path)
+                    if result and self._filter_by_metadata(result['file_path'], result['metadata']):
+                        metadata_results.append(result)
+                
+                # Save results
+                if metadata_results:
+                    self._save_batch_results(directory, metadata_results)
+                    total_files += len(metadata_results)
+                
+            except Exception as e:
+                raise Exception(f"Error processing directory {directory}: {str(e)}")
+        
+        # Update summary
+        self.root.after(0, lambda: self.batch_summary.insert(tk.END, 
+            f"Queue item #{queue_item['id']} completed: {total_files} files processed\n"))
+    
+    # Template Management Methods
+    def _load_default_templates(self):
+        """Load default batch processing templates."""
+        self.templates = {
+            "Basic Extraction": {
+                "file_types": ["All Files"],
+                "recursive": True,
+                "include_hidden": False,
+                "max_files": 1000,
+                "size_filter_enabled": False,
+                "date_filter_enabled": False,
+                "metadata_filter_enabled": False,
+                "output_format": "JSON",
+                "description": "Basic metadata extraction for common file types"
+            },
+            "Full Metadata": {
+                "file_types": ["All Files"],
+                "recursive": True,
+                "include_hidden": True,
+                "max_files": 5000,
+                "size_filter_enabled": False,
+                "date_filter_enabled": False,
+                "metadata_filter_enabled": False,
+                "output_format": "JSON",
+                "description": "Comprehensive metadata extraction including hidden files"
+            },
+            "Images Only": {
+                "file_types": ["Images"],
+                "recursive": True,
+                "include_hidden": False,
+                "max_files": 2000,
+                "size_filter_enabled": True,
+                "min_size": 1024,
+                "max_size": 50*1024*1024,
+                "date_filter_enabled": False,
+                "metadata_filter_enabled": False,
+                "output_format": "JSON",
+                "description": "Extract metadata from image files only"
+            },
+            "Documents Only": {
+                "file_types": ["Documents"],
+                "recursive": True,
+                "include_hidden": False,
+                "max_files": 1000,
+                "size_filter_enabled": False,
+                "date_filter_enabled": False,
+                "metadata_filter_enabled": False,
+                "output_format": "CSV",
+                "description": "Extract metadata from document files only"
+            },
+            "Media Files": {
+                "file_types": ["Audio", "Video"],
+                "recursive": True,
+                "include_hidden": False,
+                "max_files": 500,
+                "size_filter_enabled": True,
+                "min_size": 1024*1024,
+                "date_filter_enabled": False,
+                "metadata_filter_enabled": False,
+                "output_format": "JSON",
+                "description": "Extract metadata from audio and video files"
+            }
+        }
+    
+    def on_template_selected(self, event=None):
+        """Handle template selection change."""
+        template_name = self.template_var.get()
+        if template_name == "Custom":
+            return
+        
+        # Show template description
+        template = self.templates.get(template_name) or self.custom_templates.get(template_name)
+        if template:
+            messagebox.showinfo("Template Info", 
+                f"Template: {template_name}\n\n{template.get('description', 'No description available')}")
+    
+    def apply_template(self):
+        """Apply the selected template to current settings."""
+        template_name = self.template_var.get()
+        if template_name == "Custom":
+            messagebox.showinfo("Info", "Custom template is already active.")
+            return
+        
+        template = self.templates.get(template_name) or self.custom_templates.get(template_name)
+        if not template:
+            messagebox.showerror("Error", f"Template '{template_name}' not found.")
+            return
+        
+        try:
+            # Apply file type settings
+            if hasattr(self, 'batch_file_type'):
+                if template['file_types']:
+                    self.batch_file_type.set(template['file_types'][0])
+            
+            # Apply basic settings
+            if hasattr(self, 'batch_recursive'):
+                self.batch_recursive.set(template.get('recursive', True))
+            if hasattr(self, 'batch_include_hidden'):
+                self.batch_include_hidden.set(template.get('include_hidden', False))
+            if hasattr(self, 'batch_max_files'):
+                self.batch_max_files.set(template.get('max_files', 1000))
+            
+            # Apply filter settings
+            if hasattr(self, 'size_filter_enabled'):
+                self.size_filter_enabled.set(template.get('size_filter_enabled', False))
+                if template.get('size_filter_enabled'):
+                    if hasattr(self, 'min_size_mb'):
+                        self.min_size_mb.set(template.get('min_size', 0) / (1024*1024))
+                    if hasattr(self, 'max_size_mb'):
+                        self.max_size_mb.set(template.get('max_size', 100*1024*1024) / (1024*1024))
+            
+            if hasattr(self, 'date_filter_enabled'):
+                self.date_filter_enabled.set(template.get('date_filter_enabled', False))
+            
+            if hasattr(self, 'metadata_filter_enabled'):
+                self.metadata_filter_enabled.set(template.get('metadata_filter_enabled', False))
+            
+            # Apply output format
+            if hasattr(self, 'batch_output_format'):
+                self.batch_output_format.set(template.get('output_format', 'JSON'))
+            
+            messagebox.showinfo("Success", f"Template '{template_name}' applied successfully!")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to apply template: {str(e)}")
+    
+    def save_template(self):
+        """Save current settings as a new template."""
+        # Get template name from user
+        template_name = simpledialog.askstring("Save Template", "Enter template name:")
+        if not template_name:
+            return
+        
+        if template_name in self.templates:
+            if not messagebox.askyesno("Confirm", f"Template '{template_name}' already exists. Overwrite?"):
+                return
+        
+        try:
+            # Collect current settings
+            template = {
+                "file_types": [getattr(self, 'batch_file_type', tk.StringVar()).get()],
+                "recursive": getattr(self, 'batch_recursive', tk.BooleanVar()).get(),
+                "include_hidden": getattr(self, 'batch_include_hidden', tk.BooleanVar()).get(),
+                "max_files": getattr(self, 'batch_max_files', tk.IntVar()).get(),
+                "size_filter_enabled": getattr(self, 'size_filter_enabled', tk.BooleanVar()).get(),
+                "date_filter_enabled": getattr(self, 'date_filter_enabled', tk.BooleanVar()).get(),
+                "metadata_filter_enabled": getattr(self, 'metadata_filter_enabled', tk.BooleanVar()).get(),
+                "output_format": getattr(self, 'batch_output_format', tk.StringVar()).get(),
+                "description": f"Custom template created on {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+            
+            # Add size filter details if enabled
+            if template["size_filter_enabled"]:
+                template["min_size"] = int(getattr(self, 'min_size_mb', tk.DoubleVar()).get() * 1024 * 1024)
+                template["max_size"] = int(getattr(self, 'max_size_mb', tk.DoubleVar()).get() * 1024 * 1024)
+            
+            # Save to custom templates
+            self.custom_templates[template_name] = template
+            
+            # Update combobox values
+            current_values = list(self.template_combo['values'])
+            if template_name not in current_values:
+                current_values.append(template_name)
+                self.template_combo['values'] = current_values
+            
+            messagebox.showinfo("Success", f"Template '{template_name}' saved successfully!")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save template: {str(e)}")
+    
+    def delete_template(self):
+        """Delete a custom template."""
+        template_name = self.template_var.get()
+        
+        if template_name == "Custom":
+            messagebox.showinfo("Info", "Cannot delete the Custom template.")
+            return
+        
+        if template_name in self.templates:
+            messagebox.showerror("Error", "Cannot delete built-in templates.")
+            return
+        
+        if template_name not in self.custom_templates:
+            messagebox.showerror("Error", f"Template '{template_name}' not found.")
+            return
+        
+        if messagebox.askyesno("Confirm", f"Delete template '{template_name}'?"):
+            try:
+                # Remove from custom templates
+                del self.custom_templates[template_name]
+                
+                # Update combobox values
+                current_values = list(self.template_combo['values'])
+                if template_name in current_values:
+                    current_values.remove(template_name)
+                    self.template_combo['values'] = current_values
+                
+                # Reset to Custom
+                self.template_var.set("Custom")
+                
+                messagebox.showinfo("Success", f"Template '{template_name}' deleted successfully!")
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete template: {str(e)}")
     
     # Batch File Operations Methods
     def browse_ops_source(self):
@@ -2128,6 +3847,10 @@ Other:
                 'verbose_output': self.verbose_output.get(),
                 'experimental_features': self.experimental_features.get(),
                 'plugin_dir': self.plugin_dir.get()
+            },
+            'update': {
+                'auto_check_updates': self.auto_check_updates.get(),
+                'notify_beta_updates': self.notify_beta_updates.get()
             }
         }
     
@@ -2421,6 +4144,117 @@ Other:
                 self.root.after(0, lambda: self.status_var.set("Ready"))
         
         threading.Thread(target=update_worker, daemon=True).start()
+    
+    def check_beta_updates(self):
+        """Check for available beta updates and show beta update dialog."""
+        def beta_update_worker():
+            try:
+                self.status_var.set("Checking for beta updates...")
+                updates_available, release_info = self.updater.check_for_beta_updates()
+                
+                self.root.after(0, lambda: self._show_beta_update_dialog(updates_available, release_info))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Beta Update Check Failed", 
+                    f"Failed to check for beta updates: {str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.status_var.set("Ready"))
+        
+        threading.Thread(target=beta_update_worker, daemon=True).start()
+    
+    def _show_beta_update_dialog(self, updates_available, release_info):
+        """Show beta update dialog with warnings and current status."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("MetaCLI Beta Updates")
+        dialog.geometry("550x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Beta warning section
+        warning_frame = ttk.Frame(main_frame)
+        warning_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        warning_label = ttk.Label(warning_frame, text="⚠️ BETA VERSION WARNING", 
+                                 font=("TkDefaultFont", 12, "bold"), foreground="red")
+        warning_label.pack()
+        
+        warning_text = ttk.Label(warning_frame, 
+                               text="Beta versions are experimental and may contain bugs.\nThey are not recommended for production use.\nPlease backup your data before installing.",
+                               font=("TkDefaultFont", 9), foreground="orange", justify=tk.CENTER)
+        warning_text.pack(pady=(5, 0))
+        
+        # Separator
+        ttk.Separator(main_frame, orient='horizontal').pack(fill=tk.X, pady=(10, 15))
+        
+        # Current installation info
+        info_frame = ttk.LabelFrame(main_frame, text="Current Installation", padding="10")
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        try:
+            current_info = self.updater.get_current_version_info()
+            current_text = f"Version: {current_info.get('version', 'Unknown')}\n"
+            current_text += f"Installation: {current_info.get('installation_type', 'Unknown')}\n"
+            current_text += f"Path: {current_info.get('installation_path', 'Unknown')}"
+        except Exception as e:
+            current_text = f"Error getting current version info: {str(e)}"
+        
+        ttk.Label(info_frame, text=current_text, font=("Consolas", 9)).pack(anchor=tk.W)
+        
+        # Update status
+        status_frame = ttk.LabelFrame(main_frame, text="Beta Update Status", padding="10")
+        status_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        if updates_available and release_info:
+            status_text = f"🎯 Beta Update Available!\n\n"
+            status_text += f"Version: {release_info.get('tag_name', 'Unknown')}\n"
+            status_text += f"Published: {release_info.get('published_at', 'Unknown')}\n"
+            status_text += f"Pre-release: {'Yes' if release_info.get('prerelease', False) else 'No'}\n\n"
+            
+            if release_info.get('body'):
+                status_text += "Release Notes:\n"
+                # Truncate release notes if too long
+                notes = release_info['body'][:300]
+                if len(release_info['body']) > 300:
+                    notes += "..."
+                status_text += notes
+            
+            status_label = ttk.Label(status_frame, text=status_text, font=("TkDefaultFont", 9))
+            status_label.pack(anchor=tk.W)
+            
+            # GitHub link
+            if release_info.get('html_url'):
+                link_frame = ttk.Frame(status_frame)
+                link_frame.pack(fill=tk.X, pady=(10, 0))
+                
+                link_label = ttk.Label(link_frame, text="View on GitHub", 
+                                     foreground="blue", cursor="hand2", font=("TkDefaultFont", 9, "underline"))
+                link_label.pack(anchor=tk.W)
+                link_label.bind("<Button-1>", lambda e: webbrowser.open(release_info['html_url']))
+        else:
+            status_text = "✅ No beta updates available.\nYou have the latest beta version or no beta versions exist."
+            ttk.Label(status_frame, text=status_text, font=("TkDefaultFont", 9)).pack(anchor=tk.W)
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        if updates_available and release_info:
+            install_btn = ttk.Button(button_frame, text="Install Beta Update", 
+                                   command=lambda: self._perform_update(dialog, release_info))
+            install_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
     
     def _show_update_dialog(self, updates_available, release_info):
         """Show update dialog with current status."""
@@ -3094,7 +4928,7 @@ For more information, visit: https://github.com/darkiifr/Metacli
     def show_settings(self):
         """Show settings dialog."""
         # Switch to settings tab
-        self.notebook.select(4)  # Assuming settings is the 5th tab (index 4)
+        self.notebook.select(3)  # Settings is the 4th tab (index 3)
     
     def batch_process(self):
         """Start batch processing."""

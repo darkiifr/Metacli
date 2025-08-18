@@ -1,0 +1,10 @@
+metacli\__init__.py
+metacli\core\__init__.py
+metacli\core\extractor.py
+metacli\core\scanner.py
+metacli\utils\__init__.py
+metacli\utils\formatter.py
+metacli\utils\logger.py
+metacli_cli.py
+README.md
+setup.py

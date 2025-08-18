@@ -19,9 +19,9 @@ if requirements_file.exists():
 
 setup(
     name="metacli",
-    version="1.0.0",
-    author="MetaCLI Development Team",
-    author_email="dev@metacli.com",
+    version="1.8.0",
+    author="MetaCLI Development Team (vins studio)",
+    author_email="vinsstudio@vinsstudio.xyz",
     description="A powerful command-line interface for extracting, processing, and managing file metadata",
     long_description=long_description,
     long_description_content_type="text/markdown",

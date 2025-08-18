@@ -111,9 +111,39 @@ class MetaCLI:
                 
             results = []
             
+            # Initialize progress tracking
+            start_time = datetime.now()
+            total_files = len(files)
+            processed_files = 0
+            failed_files = 0
+            
             for i, file_path in enumerate(files):
-                if verbose and i % 10 == 0:
-                    print(f"Processing file {i+1}/{len(files)}: {file_path.name}")
+                # Calculate progress and time estimates
+                progress_percent = ((i + 1) / total_files) * 100
+                elapsed_time = (datetime.now() - start_time).total_seconds()
+                
+                if i > 0:  # Avoid division by zero
+                    estimated_total_time = elapsed_time * total_files / (i + 1)
+                    remaining_time = max(0, estimated_total_time - elapsed_time)
+                else:
+                    remaining_time = 0
+                
+                if verbose:
+                    # Create progress bar
+                    bar_length = 30
+                    filled_length = int(bar_length * (i + 1) // total_files)
+                    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+                    
+                    # Format time estimates
+                    remaining_min = int(remaining_time // 60)
+                    remaining_sec = int(remaining_time % 60)
+                    
+                    # Truncate filename for display
+                    display_name = file_path.name[:20]
+                    if len(file_path.name) > 20:
+                        display_name = display_name + "..."
+                    
+                    print(f"\r[{bar}] {progress_percent:.1f}% ({i+1}/{total_files}) - {display_name:<23} - ETA: {remaining_min:02d}:{remaining_sec:02d}", end='', flush=True)
                     
                 # Enhanced file information with better error handling
                 try:
@@ -166,9 +196,12 @@ class MetaCLI:
                         except Exception as e:
                             file_info['metadata_error'] = str(e)
                             if verbose:
-                                print(f"Warning: Failed to extract metadata for {file_path.name}: {e}")
+                                print(f"\nWarning: Failed to extract metadata for {file_path.name}: {e}")
+                                
+                    processed_files += 1
                                 
                 except Exception as e:
+                    failed_files += 1
                     file_info = {
                         'path': str(file_path),
                         'name': file_path.name,
@@ -176,6 +209,12 @@ class MetaCLI:
                     }
                         
                 results.append(file_info)
+            
+            # Clear progress line and show completion
+            if verbose:
+                total_time = (datetime.now() - start_time).total_seconds()
+                print(f"\n✓ Directory scan completed in {total_time:.1f}s")
+                print(f"Processed: {processed_files} files, Failed: {failed_files} files")
                 
             # Generate summary
             summary = self._generate_scan_summary(results)
@@ -234,9 +273,39 @@ class MetaCLI:
                 
             os.makedirs(output_dir, exist_ok=True)
             
+            # Initialize progress tracking
+            start_time = datetime.now()
+            total_files = len(file_paths)
+            processed_files = 0
+            failed_files = 0
+            
             for i, file_path in enumerate(file_paths):
+                # Calculate progress and time estimates
+                progress_percent = ((i + 1) / total_files) * 100
+                elapsed_time = (datetime.now() - start_time).total_seconds()
+                
+                if i > 0:  # Avoid division by zero
+                    estimated_total_time = elapsed_time * total_files / (i + 1)
+                    remaining_time = max(0, estimated_total_time - elapsed_time)
+                else:
+                    remaining_time = 0
+                
                 if verbose:
-                    print(f"Processing {i+1}/{len(file_paths)}: {file_path}")
+                    # Create progress bar
+                    bar_length = 30
+                    filled_length = int(bar_length * (i + 1) // total_files)
+                    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+                    
+                    # Format time estimates
+                    remaining_min = int(remaining_time // 60)
+                    remaining_sec = int(remaining_time % 60)
+                    
+                    # Truncate filename for display
+                    display_name = Path(file_path).name[:20]
+                    if len(Path(file_path).name) > 20:
+                        display_name = display_name + "..."
+                    
+                    print(f"\r[{bar}] {progress_percent:.1f}% ({i+1}/{total_files}) - {display_name:<23} - ETA: {remaining_min:02d}:{remaining_sec:02d}", end='', flush=True)
                     
                 try:
                     metadata = self.extractor.extract_metadata(file_path)
@@ -259,14 +328,167 @@ class MetaCLI:
                             with open(output_file, 'w', encoding='utf-8') as f:
                                 json.dump(metadata, f, indent=2, default=str)
                                 
-                except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
+                    processed_files += 1
                     
+                except Exception as e:
+                    failed_files += 1
+                    if verbose:
+                        print(f"\nError processing {file_path}: {e}")
+            
+            # Clear progress line and show completion
             if verbose:
-                print(f"Batch processing completed. Results saved to: {output_dir}")
+                total_time = (datetime.now() - start_time).total_seconds()
+                print(f"\n✓ Batch processing completed in {total_time:.1f}s")
+                print(f"Results saved to: {output_dir}")
+                print(f"Processed: {processed_files} files, Failed: {failed_files} files")
                 
         except Exception as e:
             print(f"Error in batch processing: {e}")
+            
+    def batch_report(self, input_file: str, output_file: str, 
+                    report_format: str = 'html', verbose: bool = False) -> None:
+        """Generate comprehensive batch report from file list."""
+        try:
+            with open(input_file, 'r', encoding='utf-8') as f:
+                file_paths = [line.strip() for line in f if line.strip()]
+                
+            if verbose:
+                print(f"Generating batch report for {len(file_paths)} files from {input_file}")
+                
+            # Process all files and collect metadata
+            results = []
+            errors = []
+            
+            # Initialize progress tracking
+            start_time = datetime.now()
+            total_files = len(file_paths)
+            
+            for i, file_path in enumerate(file_paths):
+                # Calculate progress and time estimates
+                progress_percent = ((i + 1) / total_files) * 100
+                elapsed_time = (datetime.now() - start_time).total_seconds()
+                
+                if i > 0:  # Avoid division by zero
+                    estimated_total_time = elapsed_time * total_files / (i + 1)
+                    remaining_time = max(0, estimated_total_time - elapsed_time)
+                else:
+                    remaining_time = 0
+                
+                if verbose:
+                    # Create progress bar
+                    bar_length = 30
+                    filled_length = int(bar_length * (i + 1) // total_files)
+                    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+                    
+                    # Format time estimates
+                    remaining_min = int(remaining_time // 60)
+                    remaining_sec = int(remaining_time % 60)
+                    
+                    # Truncate filename for display
+                    display_name = Path(file_path).name[:20]
+                    if len(Path(file_path).name) > 20:
+                        display_name = display_name + "..."
+                    
+                    print(f"\r[{bar}] {progress_percent:.1f}% ({i+1}/{total_files}) - {display_name:<23} - ETA: {remaining_min:02d}:{remaining_sec:02d}", end='', flush=True)
+                    
+                try:
+                    file_path_obj = Path(file_path)
+                    if not file_path_obj.exists():
+                        errors.append({
+                            'file': file_path,
+                            'error': 'File not found',
+                            'type': 'FileNotFoundError'
+                        })
+                        continue
+                        
+                    # Get basic file info
+                    stat_info = file_path_obj.stat()
+                    file_info = {
+                        'path': str(file_path_obj),
+                        'name': file_path_obj.name,
+                        'size': stat_info.st_size,
+                        'size_human': self._format_size(stat_info.st_size),
+                        'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
+                        'extension': file_path_obj.suffix.lower(),
+                        'file_type': self._get_file_type(file_path_obj.suffix.lower())
+                    }
+                    
+                    # Extract metadata
+                    try:
+                        metadata = self.extractor.extract_metadata(str(file_path_obj))
+                        file_info['metadata'] = metadata
+                        file_info['has_metadata'] = True
+                        
+                        # Extract key metadata fields for quick access
+                        if isinstance(metadata, dict):
+                            if 'basic' in metadata:
+                                basic = metadata['basic']
+                                file_info['mime_type'] = basic.get('mime_type')
+                                file_info['created'] = basic.get('created')
+                                
+                            # Add type-specific info
+                            if 'image' in metadata:
+                                img = metadata['image']
+                                file_info['dimensions'] = f"{img.get('width', 0)}x{img.get('height', 0)}"
+                                file_info['megapixels'] = img.get('megapixels')
+                            elif 'audio' in metadata:
+                                audio = metadata['audio']
+                                file_info['duration'] = audio.get('duration_human')
+                                file_info['bitrate'] = audio.get('bitrate_kbps')
+                            elif 'video' in metadata:
+                                video = metadata['video']
+                                file_info['duration'] = video.get('duration_human')
+                                file_info['resolution'] = video.get('resolution')
+                            elif 'document' in metadata:
+                                doc = metadata['document']
+                                file_info['pages'] = doc.get('pages')
+                                file_info['words'] = doc.get('words')
+                                
+                    except Exception as e:
+                        file_info['metadata_error'] = str(e)
+                        file_info['has_metadata'] = False
+                        errors.append({
+                            'file': file_path,
+                            'error': str(e),
+                            'type': 'MetadataExtractionError'
+                        })
+                        
+                    results.append(file_info)
+                    
+                except Exception as e:
+                    errors.append({
+                        'file': file_path,
+                        'error': str(e),
+                        'type': 'ProcessingError'
+                    })
+            
+            # Clear progress line and show completion
+            if verbose:
+                total_time = (datetime.now() - start_time).total_seconds()
+                print(f"\n✓ Processing completed in {total_time:.1f}s")
+                    
+            # Generate comprehensive report
+            report_data = self._generate_batch_report_data(results, errors, file_paths)
+            
+            # Format and save report
+            if report_format.lower() == 'html':
+                report_content = self._generate_html_report(report_data)
+            elif report_format.lower() == 'json':
+                report_content = json.dumps(report_data, indent=2, default=str)
+            elif report_format.lower() == 'csv':
+                report_content = self._generate_csv_report(report_data)
+            else:
+                report_content = json.dumps(report_data, indent=2, default=str)
+                
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(report_content)
+                
+            if verbose:
+                print(f"Batch report generated: {output_file}")
+                print(f"Processed: {len(results)} files, Errors: {len(errors)}")
+                
+        except Exception as e:
+            print(f"Error generating batch report: {e}")
             
     def compare_files(self, file1: str, file2: str, output_format: str = 'json',
                      output_file: Optional[str] = None, verbose: bool = False) -> Dict[str, Any]:
@@ -651,6 +873,290 @@ class MetaCLI:
         p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
         return f"{s} {size_names[i]}"
+        
+    def _generate_batch_report_data(self, results: List[Dict[str, Any]], 
+                                   errors: List[Dict[str, Any]], 
+                                   original_files: List[str]) -> Dict[str, Any]:
+        """Generate comprehensive batch report data."""
+        total_files = len(original_files)
+        processed_files = len(results)
+        error_count = len(errors)
+        
+        # Calculate statistics
+        total_size = sum(r.get('size', 0) for r in results)
+        files_with_metadata = sum(1 for r in results if r.get('has_metadata', False))
+        
+        # Extension statistics
+        extensions = {}
+        file_types = {}
+        mime_types = {}
+        
+        for result in results:
+            ext = result.get('extension', '')
+            file_type = result.get('file_type', 'Unknown')
+            mime_type = result.get('mime_type', 'Unknown')
+            
+            extensions[ext] = extensions.get(ext, 0) + 1
+            file_types[file_type] = file_types.get(file_type, 0) + 1
+            mime_types[mime_type] = mime_types.get(mime_type, 0) + 1
+            
+        # Size statistics
+        sizes = [r.get('size', 0) for r in results if r.get('size', 0) > 0]
+        size_stats = {
+            'total_size': total_size,
+            'total_size_human': self._format_size(total_size),
+            'average_size': sum(sizes) // len(sizes) if sizes else 0,
+            'largest_file': max(sizes) if sizes else 0,
+            'smallest_file': min(sizes) if sizes else 0
+        }
+        
+        if size_stats['average_size'] > 0:
+            size_stats['average_size_human'] = self._format_size(size_stats['average_size'])
+        if size_stats['largest_file'] > 0:
+            size_stats['largest_file_human'] = self._format_size(size_stats['largest_file'])
+        if size_stats['smallest_file'] > 0:
+            size_stats['smallest_file_human'] = self._format_size(size_stats['smallest_file'])
+            
+        # Error statistics
+        error_types = {}
+        for error in errors:
+            error_type = error.get('type', 'Unknown')
+            error_types[error_type] = error_types.get(error_type, 0) + 1
+            
+        # Media-specific statistics
+        media_stats = {
+            'images': {'count': 0, 'total_megapixels': 0, 'formats': {}},
+            'audio': {'count': 0, 'total_duration': 0, 'formats': {}},
+            'video': {'count': 0, 'total_duration': 0, 'formats': {}},
+            'documents': {'count': 0, 'total_pages': 0, 'total_words': 0}
+        }
+        
+        for result in results:
+            if result.get('file_type') == 'Image':
+                media_stats['images']['count'] += 1
+                if 'megapixels' in result:
+                    media_stats['images']['total_megapixels'] += result.get('megapixels', 0)
+                ext = result.get('extension', '')
+                media_stats['images']['formats'][ext] = media_stats['images']['formats'].get(ext, 0) + 1
+                
+            elif result.get('file_type') == 'Audio':
+                media_stats['audio']['count'] += 1
+                ext = result.get('extension', '')
+                media_stats['audio']['formats'][ext] = media_stats['audio']['formats'].get(ext, 0) + 1
+                
+            elif result.get('file_type') == 'Video':
+                media_stats['video']['count'] += 1
+                ext = result.get('extension', '')
+                media_stats['video']['formats'][ext] = media_stats['video']['formats'].get(ext, 0) + 1
+                
+            elif result.get('file_type') == 'Document':
+                media_stats['documents']['count'] += 1
+                if 'pages' in result:
+                    media_stats['documents']['total_pages'] += result.get('pages', 0)
+                if 'words' in result:
+                    media_stats['documents']['total_words'] += result.get('words', 0)
+        
+        return {
+            'report_info': {
+                'generated_at': datetime.now().isoformat(),
+                'total_files_requested': total_files,
+                'files_processed': processed_files,
+                'files_with_errors': error_count,
+                'success_rate': f"{((processed_files / total_files) * 100):.1f}%" if total_files > 0 else "0%",
+                'metadata_extraction_rate': f"{((files_with_metadata / processed_files) * 100):.1f}%" if processed_files > 0 else "0%"
+            },
+            'statistics': {
+                'size_statistics': size_stats,
+                'extension_distribution': dict(sorted(extensions.items(), key=lambda x: x[1], reverse=True)),
+                'file_type_distribution': dict(sorted(file_types.items(), key=lambda x: x[1], reverse=True)),
+                'mime_type_distribution': dict(sorted(mime_types.items(), key=lambda x: x[1], reverse=True)),
+                'media_statistics': media_stats
+            },
+            'errors': {
+                'total_errors': error_count,
+                'error_types': error_types,
+                'error_details': errors
+            },
+            'files': results
+        }
+        
+    def _generate_html_report(self, report_data: Dict[str, Any]) -> str:
+        """Generate HTML report from report data."""
+        html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MetaCLI Batch Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background-color: #f0f0f0; padding: 20px; border-radius: 5px; }
+        .section { margin: 20px 0; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
+        .stat-card { background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #007acc; }
+        .error { color: #d32f2f; }
+        .success { color: #388e3c; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .file-list { max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+"""
+        
+        # Header
+        report_info = report_data['report_info']
+        html += f"""
+    <div class="header">
+        <h1>MetaCLI Batch Report</h1>
+        <p>Generated: {report_info['generated_at']}</p>
+        <p>Files Processed: {report_info['files_processed']} / {report_info['total_files_requested']}</p>
+        <p>Success Rate: <span class="success">{report_info['success_rate']}</span></p>
+        <p>Metadata Extraction Rate: <span class="success">{report_info['metadata_extraction_rate']}</span></p>
+    </div>
+"""
+        
+        # Statistics
+        stats = report_data['statistics']
+        html += """
+    <div class="section">
+        <h2>Statistics</h2>
+        <div class="stats-grid">
+"""
+        
+        # Size statistics
+        size_stats = stats['size_statistics']
+        html += f"""
+            <div class="stat-card">
+                <h3>Size Statistics</h3>
+                <p>Total Size: {size_stats['total_size_human']}</p>
+                <p>Average Size: {size_stats.get('average_size_human', 'N/A')}</p>
+                <p>Largest File: {size_stats.get('largest_file_human', 'N/A')}</p>
+                <p>Smallest File: {size_stats.get('smallest_file_human', 'N/A')}</p>
+            </div>
+"""
+        
+        # File type distribution
+        html += """
+            <div class="stat-card">
+                <h3>File Types</h3>
+"""
+        for file_type, count in list(stats['file_type_distribution'].items())[:5]:
+            html += f"<p>{file_type}: {count} files</p>"
+        html += "</div>"
+        
+        # Extension distribution
+        html += """
+            <div class="stat-card">
+                <h3>Top Extensions</h3>
+"""
+        for ext, count in list(stats['extension_distribution'].items())[:5]:
+            html += f"<p>{ext or '(no extension)'}: {count} files</p>"
+        html += "</div>"
+        
+        html += "</div></div>"
+        
+        # Errors section
+        if report_data['errors']['total_errors'] > 0:
+            html += """
+    <div class="section">
+        <h2>Errors</h2>
+        <div class="error">
+"""
+            html += f"<p>Total Errors: {report_data['errors']['total_errors']}</p>"
+            
+            for error_type, count in report_data['errors']['error_types'].items():
+                html += f"<p>{error_type}: {count} errors</p>"
+                
+            html += "</div></div>"
+        
+        # Files table
+        html += """
+    <div class="section">
+        <h2>Files</h2>
+        <div class="file-list">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Size</th>
+                        <th>Type</th>
+                        <th>Modified</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        
+        for file_info in report_data['files'][:100]:  # Limit to first 100 files
+            name = Path(file_info['path']).name
+            size = file_info.get('size_human', 'N/A')
+            file_type = file_info.get('file_type', 'Unknown')
+            modified = file_info.get('modified', 'N/A')
+            if modified != 'N/A' and 'T' in modified:
+                try:
+                    dt = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                    modified = dt.strftime('%Y-%m-%d %H:%M')
+                except:
+                    pass
+                    
+            status = "Success" if file_info.get('has_metadata', False) else "No Metadata"
+            if 'error' in file_info or 'metadata_error' in file_info:
+                status = "Error"
+                
+            status_class = "success" if status == "Success" else "error" if status == "Error" else ""
+            
+            html += f"""
+                    <tr>
+                        <td>{name}</td>
+                        <td>{size}</td>
+                        <td>{file_type}</td>
+                        <td>{modified}</td>
+                        <td class="{status_class}">{status}</td>
+                    </tr>
+"""
+        
+        html += """
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+        
+        return html
+        
+    def _generate_csv_report(self, report_data: Dict[str, Any]) -> str:
+        """Generate CSV report from report data."""
+        import csv
+        from io import StringIO
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow([
+            'File Path', 'File Name', 'Size (Bytes)', 'Size (Human)', 'File Type',
+            'Extension', 'MIME Type', 'Modified', 'Has Metadata', 'Error'
+        ])
+        
+        # Write file data
+        for file_info in report_data['files']:
+            writer.writerow([
+                file_info.get('path', ''),
+                Path(file_info.get('path', '')).name,
+                file_info.get('size', 0),
+                file_info.get('size_human', ''),
+                file_info.get('file_type', ''),
+                file_info.get('extension', ''),
+                file_info.get('mime_type', ''),
+                file_info.get('modified', ''),
+                file_info.get('has_metadata', False),
+                file_info.get('error', file_info.get('metadata_error', ''))
+            ])
+        
+        return output.getvalue()
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -712,6 +1218,15 @@ Examples:
     batch_parser.add_argument('--format', '-f', choices=['json', 'yaml'], 
                              default='json', help='Output format')
     
+    # Batch report command
+    batch_report_parser = subparsers.add_parser('batch-report', help='Generate comprehensive batch report')
+    batch_report_parser.add_argument('input_file', help='Text file containing list of file paths')
+    batch_report_parser.add_argument('--output', '-o', help='Output file path')
+    batch_report_parser.add_argument('--format', '-f', choices=['html', 'json', 'csv'], 
+                                    default='html', help='Report format (default: html)')
+    batch_report_parser.add_argument('--workers', type=int, default=4,
+                                    help='Number of worker threads (default: 4)')
+    
     # Compare command
     compare_parser = subparsers.add_parser('compare', help='Compare metadata between two files')
     compare_parser.add_argument('file1', help='First file path')
@@ -767,6 +1282,14 @@ def main():
                 input_file=args.input_file,
                 output_dir=args.output_dir,
                 output_format=args.format,
+                verbose=args.verbose
+            )
+            
+        elif args.command == 'batch-report':
+            cli.batch_report(
+                input_file=args.input_file,
+                output_file=args.output,
+                report_format=args.format,
                 verbose=args.verbose
             )
             

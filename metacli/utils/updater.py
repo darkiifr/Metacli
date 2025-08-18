@@ -6,9 +6,10 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, List
 import requests
 from packaging import version
+import re
 
 from .hasher import ExecutableHasher
 
@@ -53,19 +54,129 @@ class MetaCLIUpdater:
         # Default to current directory if nothing found
         return Path.cwd()
     
-    def get_latest_release_info(self) -> Optional[Dict[str, Any]]:
-        """Get information about the latest GitHub release.
+    def _is_beta_version(self, tag_name: str) -> bool:
+        """Check if a version tag represents a beta release.
+        
+        Args:
+            tag_name: Version tag from GitHub release
+            
+        Returns:
+            True if this is a beta version, False otherwise
+        """
+        if not tag_name:
+            return False
+        
+        # Common beta indicators
+        beta_patterns = [
+            r'beta',
+            r'alpha',
+            r'rc',
+            r'pre',
+            r'dev',
+            r'nightly',
+            r'snapshot',
+            r'-b\d+',  # -b1, -b2, etc.
+            r'-a\d+',  # -a1, -a2, etc.
+        ]
+        
+        tag_lower = tag_name.lower()
+        return any(re.search(pattern, tag_lower) for pattern in beta_patterns)
+    
+    def get_all_releases(self) -> Optional[List[Dict[str, Any]]]:
+        """Get all GitHub releases.
+        
+        Returns:
+            List of release information dictionaries or None if failed
+        """
+        try:
+            response = requests.get(f"{self.github_api_base}/releases", timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error fetching releases: {e}")
+            return None
+    
+    def get_latest_stable_release(self) -> Optional[Dict[str, Any]]:
+        """Get the latest stable (non-beta) release.
         
         Returns:
             Release information dictionary or None if failed
         """
-        try:
-            response = requests.get(f"{self.github_api_base}/releases/latest", timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            print(f"Error fetching release info: {e}")
+        releases = self.get_all_releases()
+        if not releases:
             return None
+        
+        # Filter out beta releases and find the latest stable
+        stable_releases = [
+            release for release in releases 
+            if not self._is_beta_version(release.get('tag_name', ''))
+            and not release.get('prerelease', False)
+            and not release.get('draft', False)
+        ]
+        
+        if stable_releases:
+            return stable_releases[0]  # GitHub returns releases in descending order by date
+        
+        return None
+    
+    def get_latest_beta_release(self) -> Optional[Dict[str, Any]]:
+        """Get the latest beta release.
+        
+        Returns:
+            Release information dictionary or None if failed
+        """
+        releases = self.get_all_releases()
+        if not releases:
+            return None
+        
+        # Filter for beta releases and find the latest
+        beta_releases = [
+            release for release in releases 
+            if (self._is_beta_version(release.get('tag_name', '')) or 
+                release.get('prerelease', False))
+            and not release.get('draft', False)
+        ]
+        
+        if beta_releases:
+            return beta_releases[0]  # GitHub returns releases in descending order by date
+        
+        return None
+
+    def get_latest_release_info(self) -> Optional[Dict[str, Any]]:
+        """Get information about the latest stable release.
+        
+        Returns:
+            Release information dictionary or None if failed
+        """
+        return self.get_latest_stable_release()
+    
+    def check_for_beta_updates(self) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Check if beta updates are available.
+        
+        Returns:
+            Tuple of (updates_available, release_info)
+        """
+        # Get latest beta release info
+        release_info = self.get_latest_beta_release()
+        if not release_info:
+            return False, None
+        
+        # Get release hashes
+        release_hashes = self.get_release_hashes(release_info)
+        if not release_hashes:
+            return False, release_info
+        
+        # Get current installation hashes
+        current_hashes = self.hasher.get_current_installation_hashes(self.installation_path)
+        if not current_hashes:
+            # No current installation or can't read hashes - assume update needed
+            return True, release_info
+        
+        # Compare hashes
+        comparison = self.hasher.compare_hashes(current_hashes, release_hashes)
+        updates_needed = any(comparison.values())
+        
+        return updates_needed, release_info
     
     def get_release_hashes(self, release_info: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Extract executable hashes from release assets.

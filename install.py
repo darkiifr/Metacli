@@ -344,7 +344,8 @@ echo "Note: You may need to manually remove the PATH entry from your shell confi
                     ['metacli', '--version'],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 
                 if result.returncode == 0:

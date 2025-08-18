@@ -1,31 +1,79 @@
 """Directory scanning functionality for file discovery."""
 
 import os
+import logging
 from pathlib import Path
 from typing import List, Set, Optional, Generator, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 
-from .extractor import MetadataExtractor
+from .extractor import MetadataExtractor, ExtractionError, ErrorSeverity
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ScanResult:
-    """Result of a file scan operation."""
+    """Result of scanning a single file."""
     file_path: Path
     metadata: Dict[str, Any]
     error: Optional[str] = None
+    error_type: Optional[str] = None
+    error_severity: Optional[str] = None
+    scan_timestamp: Optional[str] = None
+    processing_time: Optional[float] = None
+    
+    def __post_init__(self):
+        if self.scan_timestamp is None:
+            self.scan_timestamp = datetime.now().isoformat()
+    
+    @property
+    def has_error(self) -> bool:
+        """Check if this result contains an error."""
+        return self.error is not None
+    
+    @property
+    def is_recoverable_error(self) -> bool:
+        """Check if the error is recoverable (low/medium severity)."""
+        return self.error_severity in ['low', 'medium'] if self.error_severity else False
 
 
 class DirectoryScanner:
     """Scanner for discovering and processing files in directories."""
     
-    def __init__(self, extractor: Optional[MetadataExtractor] = None):
+    # Default directories to exclude from scanning
+    DEFAULT_EXCLUDED_DIRS = {
+        '.venv', 'venv', '.env', 'env',  # Virtual environments
+        '__pycache__', '.pytest_cache',  # Python cache
+        '.git', '.svn', '.hg',  # Version control
+        'node_modules', '.npm',  # Node.js
+        '.idea', '.vscode',  # IDEs
+        'build', 'dist', '.build',  # Build directories
+        '.tox', '.coverage',  # Testing
+        'logs', 'log', 'tmp', 'temp'  # Temporary files
+    }
+    
+    def __init__(self, extractor: Optional[MetadataExtractor] = None, excluded_dirs: Optional[Set[str]] = None):
         """Initialize the directory scanner."""
         self.extractor = extractor or MetadataExtractor()
+        self.excluded_dirs = excluded_dirs or self.DEFAULT_EXCLUDED_DIRS.copy()
         self._stop_event = threading.Event()
         self._progress_callback = None
+    
+    def set_stop_event(self, stop_event: threading.Event):
+        """Set the stop event for cancelling operations."""
+        self._stop_event = stop_event
+    
+    def stop_scanning(self):
+        """Signal to stop the current scanning operation."""
+        self._stop_event.set()
+    
+    def reset_stop_event(self):
+        """Reset the stop event for new operations."""
+        self._stop_event.clear()
     
     def set_progress_callback(self, callback):
         """Set a callback function for progress updates."""
@@ -101,33 +149,81 @@ class DirectoryScanner:
             return
         
         try:
-            if recursive:
-                # Use rglob for recursive scanning
-                pattern = '**/*' if include_hidden else '**/[!.]*'
-                for file_path in path.rglob('*'):
-                    if self._stop_event.is_set():
-                        break
-                    
-                    if file_path.is_file() and self._should_include_file(
-                        file_path, file_types, include_hidden, max_size, min_size
-                    ):
-                        yield file_path
+            # Optimize file discovery using OS-level filtering
+            if file_types:
+                # Use glob patterns for specific file types (OS-level filtering)
+                normalized_types = []
+                for ext in file_types:
+                    if not ext.startswith('.'):
+                        ext = '.' + ext
+                    normalized_types.append(ext.lower())
+                
+                # Create glob patterns for each file type
+                for ext in normalized_types:
+                    pattern = f"**/*{ext}" if recursive else f"*{ext}"
+                    try:
+                        for file_path in path.glob(pattern):
+                            if self._stop_event.is_set():
+                                return
+                            
+                            if (file_path.is_file() and 
+                                self._should_include_file_fast(file_path, include_hidden, max_size, min_size)):
+                                yield file_path
+                    except (OSError, PermissionError):
+                        continue
             else:
-                # Scan only the current directory
-                for item in path.iterdir():
-                    if self._stop_event.is_set():
-                        break
-                    
-                    if item.is_file() and self._should_include_file(
-                        item, file_types, include_hidden, max_size, min_size
-                    ):
-                        yield item
+                # General file discovery with optimized filtering
+                if recursive:
+                    for file_path in self._walk_directory_recursive(path, include_hidden):
+                        if self._stop_event.is_set():
+                            break
+                        
+                        if (file_path.is_file() and 
+                            self._should_include_file_fast(file_path, include_hidden, max_size, min_size)):
+                            yield file_path
+                else:
+                    # Scan only the current directory
+                    try:
+                        for item in path.iterdir():
+                            if self._stop_event.is_set():
+                                break
+                            
+                            if (item.is_file() and 
+                                self._should_include_file_fast(item, include_hidden, max_size, min_size)):
+                                yield item
+                    except (OSError, PermissionError):
+                        pass
         
         except PermissionError:
             # Skip directories we don't have permission to read
             pass
         except Exception:
             # Skip other errors and continue scanning
+            pass
+    
+    def _walk_directory_recursive(self, path: Path, include_hidden: bool = False) -> Generator[Path, None, None]:
+        """Recursively walk directory while respecting excluded directories."""
+        try:
+            for item in path.iterdir():
+                if self._stop_event.is_set():
+                    break
+                    
+                # Skip hidden items if not included
+                if not include_hidden and item.name.startswith('.'):
+                    continue
+                    
+                # Skip excluded directories
+                if item.is_dir() and item.name in self.excluded_dirs:
+                    continue
+                    
+                if item.is_file():
+                    yield item
+                elif item.is_dir():
+                    # Recursively walk subdirectories
+                    yield from self._walk_directory_recursive(item, include_hidden)
+                    
+        except (OSError, PermissionError):
+            # Skip directories we don't have permission to read
             pass
     
     def _should_include_file(self, 
@@ -169,77 +265,238 @@ class DirectoryScanner:
         
         return True
     
+    def _should_include_file_fast(self, 
+                                file_path: Path,
+                                include_hidden: bool = False,
+                                max_size: Optional[int] = None,
+                                min_size: Optional[int] = None) -> bool:
+        """Fast file filtering without extension check (already done by glob)."""
+        # Check if file is hidden
+        if not include_hidden and file_path.name.startswith('.'):
+            return False
+        
+        # Check file size only if needed
+        if max_size is not None or min_size is not None:
+            try:
+                file_size = file_path.stat().st_size
+                
+                if min_size is not None and file_size < min_size:
+                    return False
+                
+                if max_size is not None and file_size > max_size:
+                    return False
+            
+            except (OSError, PermissionError):
+                # If we can't get file stats, skip the file
+                return False
+        
+        return True
+    
     def scan_files(self, 
                    files: List[Path],
                    extract_metadata: bool = True,
-                   max_workers: int = 4) -> List[ScanResult]:
+                   max_workers: int = 4,
+                   timeout_per_file: Optional[float] = 30.0) -> List[ScanResult]:
         """Scan a list of files and optionally extract metadata.
         
         Args:
             files: List of file paths to scan
             extract_metadata: Whether to extract metadata from files
             max_workers: Number of worker threads for parallel processing
+            timeout_per_file: Maximum time to spend on each file (seconds)
             
         Returns:
             List of ScanResult objects
         """
         results = []
         total_files = len(files)
+        start_time = datetime.now()
+        
+        logger.info(f"Starting scan of {total_files} files with metadata extraction: {extract_metadata}")
         
         if not extract_metadata:
             # Just return basic file info without metadata extraction
             for i, file_path in enumerate(files):
                 if self._stop_event.is_set():
+                    logger.info("Scan stopped by user request")
                     break
                 
+                file_start_time = datetime.now()
                 try:
                     basic_info = {
                         'filename': file_path.name,
                         'filepath': str(file_path.absolute()),
                         'size': file_path.stat().st_size,
-                        'extension': file_path.suffix.lower()
+                        'extension': file_path.suffix.lower(),
+                        'scan_type': 'basic_info_only'
                     }
-                    results.append(ScanResult(file_path, basic_info))
+                    processing_time = (datetime.now() - file_start_time).total_seconds()
+                    results.append(ScanResult(
+                        file_path=file_path, 
+                        metadata=basic_info,
+                        processing_time=processing_time
+                    ))
                 except Exception as e:
-                    results.append(ScanResult(file_path, {}, str(e)))
+                    processing_time = (datetime.now() - file_start_time).total_seconds()
+                    error_type = type(e).__name__
+                    logger.warning(f"Failed to get basic info for {file_path}: {e}")
+                    results.append(ScanResult(
+                        file_path=file_path, 
+                        metadata={}, 
+                        error=str(e),
+                        error_type=error_type,
+                        error_severity='low',
+                        processing_time=processing_time
+                    ))
                 
                 if self._progress_callback:
                     self._progress_callback(i + 1, total_files)
             
+            logger.info(f"Basic scan completed: {len(results)} files processed")
             return results
         
-        # Extract metadata using thread pool
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_file = {
-                executor.submit(self._extract_file_metadata, file_path): file_path
-                for file_path in files
-            }
+        # Use improved batch extraction with stop event support
+        batch_start_time = datetime.now()
+        try:
+            file_paths = [str(f) for f in files]
+            logger.info(f"Starting batch metadata extraction for {len(file_paths)} files")
             
-            completed = 0
-            for future in as_completed(future_to_file):
+            metadata_results = self.extractor.extract_metadata_batch(
+                file_paths, 
+                progress_callback=self._progress_callback,
+                stop_event=self._stop_event
+            )
+            
+            # Convert results to ScanResult objects with enhanced error handling
+            for file_path in files:
+                file_str = str(file_path)
+                if file_str in metadata_results:
+                    metadata = metadata_results[file_str]
+                    
+                    # Check for errors in metadata
+                    if isinstance(metadata, dict) and metadata.get('error'):
+                        error_info = metadata
+                        results.append(ScanResult(
+                            file_path=file_path,
+                            metadata={},
+                            error=error_info.get('error', 'Unknown error'),
+                            error_type=error_info.get('error_type', 'UnknownError'),
+                            error_severity=error_info.get('error_severity', 'medium'),
+                            processing_time=error_info.get('processing_time')
+                        ))
+                    else:
+                        # Successful extraction
+                        processing_time = metadata.get('processing_time') if isinstance(metadata, dict) else None
+                        results.append(ScanResult(
+                            file_path=file_path,
+                            metadata=metadata,
+                            processing_time=processing_time
+                        ))
+                else:
+                    # File not in results - likely skipped or failed
+                    logger.warning(f"File {file_path} not found in batch results")
+                    results.append(ScanResult(
+                        file_path=file_path,
+                        metadata={},
+                        error='File not processed in batch',
+                        error_type='BatchProcessingError',
+                        error_severity='medium'
+                    ))
+                    
+        except Exception as e:
+            # Fallback to individual processing if batch fails
+            logger.warning(f"Batch processing failed, falling back to individual processing: {e}")
+            
+            for i, file_path in enumerate(files):
                 if self._stop_event.is_set():
-                    # Cancel remaining futures
-                    for f in future_to_file:
-                        f.cancel()
+                    logger.info("Individual processing stopped by user request")
                     break
-                
-                file_path = future_to_file[future]
+                    
+                file_start_time = datetime.now()
                 try:
-                    metadata = future.result()
-                    results.append(ScanResult(file_path, metadata))
-                except Exception as e:
-                    results.append(ScanResult(file_path, {}, str(e)))
+                    metadata = self._extract_file_metadata(file_path, timeout_per_file)
+                    processing_time = (datetime.now() - file_start_time).total_seconds()
+                    
+                    if isinstance(metadata, dict) and metadata.get('error'):
+                        error_info = metadata
+                        results.append(ScanResult(
+                            file_path=file_path,
+                            metadata={},
+                            error=error_info.get('error', 'Unknown error'),
+                            error_type=error_info.get('error_type', 'UnknownError'),
+                            error_severity=error_info.get('error_severity', 'medium'),
+                            processing_time=processing_time
+                        ))
+                    else:
+                        results.append(ScanResult(
+                            file_path=file_path,
+                            metadata=metadata,
+                            processing_time=processing_time
+                        ))
+                        
+                except Exception as ex:
+                    processing_time = (datetime.now() - file_start_time).total_seconds()
+                    error_type = type(ex).__name__
+                    logger.error(f"Individual processing failed for {file_path}: {ex}")
+                    
+                    results.append(ScanResult(
+                        file_path=file_path,
+                        metadata={},
+                        error=str(ex),
+                        error_type=error_type,
+                        error_severity='high' if isinstance(ex, ExtractionError) else 'medium',
+                        processing_time=processing_time
+                    ))
                 
-                completed += 1
                 if self._progress_callback:
-                    self._progress_callback(completed, total_files)
+                    self._progress_callback(i + 1, total_files)
+        
+        total_time = (datetime.now() - batch_start_time).total_seconds()
+        successful_scans = len([r for r in results if not r.has_error])
+        logger.info(f"Metadata scan completed: {successful_scans}/{len(results)} files successful in {total_time:.2f}s")
         
         return results
     
-    def _extract_file_metadata(self, file_path: Path) -> Dict[str, Any]:
-        """Extract metadata from a single file."""
-        return self.extractor.extract_metadata(file_path)
+    def _extract_file_metadata(self, file_path: Path, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Extract metadata from a single file with timeout support.
+        
+        Args:
+            file_path: Path to the file to extract metadata from
+            timeout: Maximum time to spend on extraction (seconds)
+            
+        Returns:
+            Dictionary containing metadata or error information
+        """
+        if self._stop_event.is_set():
+            return {
+                'error': 'Operation cancelled by user',
+                'error_type': 'OperationCancelled',
+                'error_severity': 'low'
+            }
+        
+        try:
+            # Use enhanced extraction with timeout and retry logic
+            metadata = self.extractor.extract_metadata(
+                file_path, 
+                max_retries=2,  # Allow retries for individual processing
+                timeout=timeout
+            )
+            return metadata
+            
+        except ExtractionError as e:
+            logger.warning(f"Extraction error for {file_path}: {e}")
+            return {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'error_severity': 'medium'
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error extracting metadata from {file_path}: {e}")
+            return {
+                'error': f'Unexpected error: {str(e)}',
+                'error_type': type(e).__name__,
+                'error_severity': 'high'
+            }
     
     def scan_directory(self, 
                       path: Path,
@@ -249,7 +506,8 @@ class DirectoryScanner:
                       extract_metadata: bool = True,
                       max_workers: int = 4,
                       max_size: Optional[int] = None,
-                      min_size: Optional[int] = None) -> List[ScanResult]:
+                      min_size: Optional[int] = None,
+                      timeout_per_file: Optional[float] = 30.0) -> List[ScanResult]:
         """Scan a directory and extract metadata from matching files.
         
         Args:
@@ -261,22 +519,34 @@ class DirectoryScanner:
             max_workers: Number of worker threads for parallel processing
             max_size: Maximum file size in bytes
             min_size: Minimum file size in bytes
+            timeout_per_file: Maximum time to spend on each file (seconds)
             
         Returns:
             List of ScanResult objects
         """
         self._stop_event.clear()
         
+        logger.info(f"Starting directory scan: {path} (recursive: {recursive})")
+        
         # Find all matching files
-        files = list(self.find_files(
-            path, recursive, file_types, include_hidden, max_size, min_size
-        ))
-        
-        if not files:
+        try:
+            files = list(self.find_files(
+                path, recursive, file_types, include_hidden, max_size, min_size
+            ))
+            
+            if not files:
+                logger.info(f"No files found in {path}")
+                return []
+            
+            logger.info(f"Found {len(files)} files to scan")
+            
+            # Scan the files with enhanced error handling
+            return self.scan_files(files, extract_metadata, max_workers, timeout_per_file)
+            
+        except Exception as e:
+            logger.error(f"Directory scan failed for {path}: {e}")
+            # Return empty results rather than crashing
             return []
-        
-        # Scan the files
-        return self.scan_files(files, extract_metadata, max_workers)
     
     def get_file_statistics(self, results: List[ScanResult]) -> Dict[str, Any]:
         """Generate statistics from scan results."""

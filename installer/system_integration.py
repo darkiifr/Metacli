@@ -450,7 +450,8 @@ $Shortcut.Save()
                 f'Add-MpPreference -ExclusionPath "{directory}"'
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, 
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 self.log(f"Successfully added {directory} to Windows Defender exclusions")
@@ -490,7 +491,8 @@ $Shortcut.Save()
                 f'Set-MpPreference -ExclusionPath @((Get-MpPreference).ExclusionPath + "{directory}")'
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, 
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             
             if result.returncode == 0:
                 self.log(f"Added {directory} to user-level Windows Defender exclusions")
